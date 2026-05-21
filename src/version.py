@@ -1,6 +1,6 @@
 """Application version. Bumped on each release tag."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 APP_NAME = "Network Monitor"
 APP_ID = "NetworkMonitor"
 ORG_NAME = "NetworkMonitor"
