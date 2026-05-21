@@ -8,10 +8,14 @@ env/
 venv/
 .venv/
 ENV/
-build/
 dist/
 *.egg-info/
 .pytest_cache/
+
+# PyInstaller working dirs (inside build/), but NOT our build scripts
+/build/NetworkMonitor/
+/build/NetworkMonitor.AppDir/
+/build/appimagetool-*.AppImage
 
 # PyInstaller
 *.spec.bak
