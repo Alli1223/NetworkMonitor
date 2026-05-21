@@ -10,8 +10,8 @@ from collections import deque
 from typing import Deque
 
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QMouseEvent
 
 from .network_monitor import format_rate
 from .theme import ColorTheme, ModeColors
@@ -35,12 +35,20 @@ class TimeAxis(pg.AxisItem):
         out = []
         for v in values:
             secs = int(round(-v))
-            out.append(f"-{secs}s" if secs > 0 else "now")
+            if secs == 0:
+                out.append("now")
+            elif secs >= 60:
+                m, s = divmod(secs, 60)
+                out.append(f"-{m}m{s:02d}s" if s else f"-{m}m")
+            else:
+                out.append(f"-{secs}s")
         return out
 
 
 class TrafficGraph(pg.PlotWidget):
     """Two stacked rolling curves: download (filled) and upload (line)."""
+
+    double_clicked = pyqtSignal()
 
     def __init__(self, history_seconds: int = 60, parent=None):
         super().__init__(
@@ -81,6 +89,10 @@ class TrafficGraph(pg.PlotWidget):
         self.setXRange(self._xs[0], 0, padding=0)
         self.setYRange(0, 1024, padding=0.1)  # default 1KB until we have data
         self.setLimits(xMin=self._xs[0], xMax=0)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
 
     def apply_theme(self, mode: ModeColors, colors: ColorTheme) -> None:
         self.setBackground(mode.bg_secondary)

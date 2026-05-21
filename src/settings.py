@@ -17,7 +17,7 @@ from .version import APP_ID, ORG_NAME
 @dataclass
 class AppSettings:
     interface: Optional[str] = None
-    history_seconds: int = 60
+    history_seconds: int = 300
     update_interval_ms: int = 1000
     start_minimized: bool = False
     minimize_to_tray_on_close: bool = True

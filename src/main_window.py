@@ -263,6 +263,7 @@ class MainWindow(QMainWindow):
         self._settings: AppSettings = self._store.load()
         self._sampler: Optional[NetworkSampler] = None
         self._force_quit = False
+        self._frameless = False
 
         # Workers / threads kept alive while they run.
         self._update_thread = None
@@ -349,6 +350,7 @@ class MainWindow(QMainWindow):
         graph_layout = QVBoxLayout(graph_card)
         graph_layout.setContentsMargins(6, 6, 6, 6)
         self.graph = TrafficGraph(history_seconds=self._settings.history_seconds)
+        self.graph.double_clicked.connect(self._toggle_frameless)
         graph_layout.addWidget(self.graph)
         outer.addWidget(graph_card, 1)
 
@@ -388,17 +390,29 @@ class MainWindow(QMainWindow):
     # ------------------------------ Window flags ----------------------------
 
     def _apply_window_flags(self) -> None:
-        """Apply 'always on top' (rebuilding flags requires re-show)."""
+        """Apply 'always on top' and frameless hints (rebuilding flags requires re-show)."""
         flags = self.windowFlags()
         if self._settings.always_on_top:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         else:
             flags &= ~Qt.WindowType.WindowStaysOnTopHint
-        # setWindowFlags hides the window; only re-show if it was visible.
+        if self._frameless:
+            flags |= Qt.WindowType.FramelessWindowHint
+        else:
+            flags &= ~Qt.WindowType.FramelessWindowHint
+        # setWindowFlags hides the window; save and restore geometry so the
+        # window doesn't jump when the title bar appears / disappears.
         was_visible = self.isVisible()
+        geom = self.geometry()
         self.setWindowFlags(flags)
+        self.setGeometry(geom)
         if was_visible:
             self.show()
+
+    def _toggle_frameless(self) -> None:
+        """Toggle the window title bar on/off (double-click on graph)."""
+        self._frameless = not self._frameless
+        self._apply_window_flags()
 
     def _apply_opacity(self) -> None:
         """Map 30..100 percent setting onto setWindowOpacity()."""
