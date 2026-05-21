@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
 from .network_monitor import format_rate
+from .theme import ColorTheme, ModeColors
 
 
 DOWNLOAD_COLOR = "#4f9dff"
@@ -80,6 +81,18 @@ class TrafficGraph(pg.PlotWidget):
         self.setXRange(self._xs[0], 0, padding=0)
         self.setYRange(0, 1024, padding=0.1)  # default 1KB until we have data
         self.setLimits(xMin=self._xs[0], xMax=0)
+
+    def apply_theme(self, mode: ModeColors, colors: ColorTheme) -> None:
+        self.setBackground(mode.bg_secondary)
+        self.getPlotItem().getAxis("left").setTextPen(QColor(mode.text_subtle))
+        self.getPlotItem().getAxis("bottom").setTextPen(QColor(mode.text_subtle))
+        self.getPlotItem().getAxis("left").setPen(QColor(mode.border))
+        self.getPlotItem().getAxis("bottom").setPen(QColor(mode.border))
+        self._down_curve.setPen(pg.mkPen(QColor(colors.download), width=2))
+        self._down_curve.setBrush(
+            pg.mkBrush(QColor(colors.fill_r, colors.fill_g, colors.fill_b, colors.fill_a))
+        )
+        self._up_curve.setPen(pg.mkPen(QColor(colors.upload), width=2))
 
     def set_history_seconds(self, seconds: int) -> None:
         seconds = max(10, int(seconds))

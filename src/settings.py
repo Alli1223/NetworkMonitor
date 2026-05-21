@@ -10,6 +10,7 @@ from typing import Optional
 
 from PyQt6.QtCore import QSettings
 
+from .theme import DEFAULT_COLOR_THEME, DEFAULT_MODE
 from .version import APP_ID, ORG_NAME
 
 
@@ -25,7 +26,8 @@ class AppSettings:
     always_on_top: bool = False
     window_geometry: Optional[bytes] = None
     window_state: Optional[bytes] = None
-    accent_color: str = "#4f9dff"  # download color accent
+    theme_mode: str = DEFAULT_MODE
+    color_theme: str = DEFAULT_COLOR_THEME
 
 
 class SettingsStore:
@@ -52,7 +54,8 @@ class SettingsStore:
         s.window_geometry = bytes(geom) if geom else None
         state = self._q.value("window_state", None)
         s.window_state = bytes(state) if state else None
-        s.accent_color = self._q.value("accent_color", s.accent_color, type=str)
+        s.theme_mode = self._q.value("theme_mode", s.theme_mode, type=str)
+        s.color_theme = self._q.value("color_theme", s.color_theme, type=str)
         return s
 
     def save(self, s: AppSettings) -> None:
@@ -68,7 +71,8 @@ class SettingsStore:
             self._q.setValue("window_geometry", s.window_geometry)
         if s.window_state is not None:
             self._q.setValue("window_state", s.window_state)
-        self._q.setValue("accent_color", s.accent_color)
+        self._q.setValue("theme_mode", s.theme_mode)
+        self._q.setValue("color_theme", s.color_theme)
         self._q.sync()
 
     @staticmethod

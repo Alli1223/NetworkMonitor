@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .graph_widget import DOWNLOAD_COLOR, UPLOAD_COLOR, TrafficGraph
+from .graph_widget import TrafficGraph
 from .network_monitor import (
     InterfaceInfo,
     NetworkSampler,
@@ -43,7 +43,8 @@ from .network_monitor import (
     list_interfaces,
 )
 from .settings import AppSettings, SettingsStore
-from .style import DARK_QSS
+from .style import generate_qss
+from .theme import COLOR_THEMES, MODES
 from .updater import (
     DownloadWorker,
     ReleaseInfo,
@@ -134,6 +135,20 @@ class SettingsDialog(QDialog):
         self.check_updates_chk = QCheckBox("Check for updates on startup")
         self.check_updates_chk.setChecked(current.check_updates_on_start)
 
+        self.mode_combo = QComboBox()
+        for key, mode in MODES.items():
+            self.mode_combo.addItem(key.capitalize(), userData=key)
+        idx = self.mode_combo.findData(current.theme_mode)
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
+
+        self.color_theme_combo = QComboBox()
+        for key, theme in COLOR_THEMES.items():
+            self.color_theme_combo.addItem(theme.label, userData=key)
+        idx = self.color_theme_combo.findData(current.color_theme)
+        if idx >= 0:
+            self.color_theme_combo.setCurrentIndex(idx)
+
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
         grid.setVerticalSpacing(8)
@@ -149,6 +164,12 @@ class SettingsDialog(QDialog):
         row += 1
         grid.addWidget(QLabel("Transparency"), row, 0)
         grid.addLayout(opacity_row, row, 1)
+        row += 1
+        grid.addWidget(QLabel("Mode"), row, 0)
+        grid.addWidget(self.mode_combo, row, 1)
+        row += 1
+        grid.addWidget(QLabel("Color theme"), row, 0)
+        grid.addWidget(self.color_theme_combo, row, 1)
         row += 1
         grid.addWidget(self.always_on_top_chk, row, 0, 1, 2)
         row += 1
@@ -208,6 +229,8 @@ class SettingsDialog(QDialog):
         s.start_minimized = self.start_min_chk.isChecked()
         s.minimize_to_tray_on_close = self.close_to_tray_chk.isChecked()
         s.check_updates_on_start = self.check_updates_chk.isChecked()
+        s.theme_mode = self.mode_combo.currentData()
+        s.color_theme = self.color_theme_combo.currentData()
         return s
 
 
@@ -329,6 +352,8 @@ class MainWindow(QMainWindow):
         graph_layout.addWidget(self.graph)
         outer.addWidget(graph_card, 1)
 
+        self._apply_theme()
+
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(load_app_icon(), self)
         self.tray.setToolTip(APP_NAME)
@@ -437,6 +462,16 @@ class MainWindow(QMainWindow):
         except Exception:
             log.exception("Tick failed (will keep running)")
 
+    # ------------------------------ Theme -----------------------------------
+
+    def _apply_theme(self) -> None:
+        mode = MODES.get(self._settings.theme_mode, MODES["dark"])
+        colors = COLOR_THEMES.get(self._settings.color_theme, COLOR_THEMES["ocean"])
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(generate_qss(mode, colors))
+        self.graph.apply_theme(mode, colors)
+
     # ------------------------------ Settings --------------------------------
 
     def _open_settings(self) -> None:
@@ -449,6 +484,7 @@ class MainWindow(QMainWindow):
             self.graph.set_history_seconds(self._settings.history_seconds)
             self._apply_opacity()
             self._apply_window_flags()
+            self._apply_theme()
             if self._settings.interface != previous_iface:
                 self._initialise_sampler(self._settings.interface)
 
@@ -661,7 +697,6 @@ def create_app() -> QApplication:
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("NetworkMonitor")
     app.setQuitOnLastWindowClosed(False)
-    app.setStyleSheet(DARK_QSS)
     app.setWindowIcon(load_app_icon())
     # Save state once more on normal quit (catches signal-based exits too).
     return app
