@@ -1,0 +1,114 @@
+name: Release
+
+# Trigger: push a tag like v0.1.0 (or v0.1.0-beta1) and this workflow will
+# build the Windows installer and a Linux AppImage, then publish them to a
+# GitHub Release. The app's in-built auto-updater watches this same release
+# feed, so users get prompted to update next time they launch.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (no leading 'v'). If blank, derived from the tag."
+        required: false
+        default: ""
+
+permissions:
+  contents: write  # required for softprops/action-gh-release
+
+jobs:
+  derive-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set.outputs.version }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            REF="${GITHUB_REF#refs/tags/}"
+            echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-windows:
+    needs: derive-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build (PyInstaller + Inno Setup)
+        shell: pwsh
+        run: |
+          .\build\windows-build.ps1 -Version ${{ needs.derive-version.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: installer_output/NetworkMonitor-Setup.exe
+
+  build-linux:
+    needs: derive-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          # Qt6 runtime libs needed by PyQt6 + Cairo for SVG rasterization
+          sudo apt-get install -y \
+            libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xkb1 libegl1 libfuse2 \
+            libcairo2 libcairo2-dev
+
+      - name: Build AppImage
+        run: |
+          chmod +x build/linux-build.sh
+          ./build/linux-build.sh ${{ needs.derive-version.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: installer_output/*.AppImage
+
+  publish:
+    needs: [derive-version, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist-windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist-linux
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.derive-version.outputs.version }}
+          name: Network Monitor v${{ needs.derive-version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist-windows/NetworkMonitor-Setup.exe
+            dist-linux/*.AppImage

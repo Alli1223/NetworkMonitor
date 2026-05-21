@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f2937"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="down" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#4f9dff"/>
+      <stop offset="1" stop-color="#7ec0ff"/>
+    </linearGradient>
+    <linearGradient id="up" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#86efac"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="url(#bg)"/>
+  <!-- Download graph (blue) -->
+  <path d="M24 184 L72 152 L112 168 L160 116 L208 132 L232 96 L232 216 L24 216 Z" fill="url(#down)" opacity="0.85"/>
+  <!-- Upload graph (green) on top -->
+  <path d="M24 152 L72 128 L112 140 L160 84 L208 104 L232 72" fill="none" stroke="url(#up)" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- Subtle grid -->
+  <g stroke="#ffffff" stroke-opacity="0.06" stroke-width="1">
+    <line x1="24" y1="64" x2="232" y2="64"/>
+    <line x1="24" y1="112" x2="232" y2="112"/>
+    <line x1="24" y1="160" x2="232" y2="160"/>
+  </g>
+</svg>
