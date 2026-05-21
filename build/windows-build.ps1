@@ -25,25 +25,15 @@ Write-Host ">> Installing build deps"
 python -m pip install --upgrade pip
 python -m pip install -r requirements-build.txt
 
-# Ensure an .ico exists so the exe has a Windows icon.
+# Ensure an .ico exists so the exe and the installer have a Windows icon.
 $ico = "$root\assets\icon.ico"
 if (-not (Test-Path $ico)) {
-    Write-Host ">> assets/icon.ico not found; trying to convert from icon.svg via Pillow + cairosvg"
+    Write-Host ">> assets\icon.ico not found; converting from icon.svg"
     python -m pip install pillow cairosvg
-    python - <<'PY'
-import os
-from cairosvg import svg2png
-from PIL import Image
-import io
-root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-svg = os.path.join(root, 'assets', 'icon.svg')
-ico = os.path.join(root, 'assets', 'icon.ico')
-png_bytes = svg2png(url=svg, output_width=256, output_height=256)
-img = Image.open(io.BytesIO(png_bytes)).convert('RGBA')
-sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-img.save(ico, sizes=sizes)
-print('Wrote', ico)
-PY
+    python "$root\build\svg_to_ico.py"
+    if (-not (Test-Path $ico)) {
+        throw "Icon conversion failed; assets\icon.ico still missing."
+    }
 }
 
 Write-Host ">> Running PyInstaller"

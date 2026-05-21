@@ -41,10 +41,7 @@ chmod +x "$APPDIR/usr/bin/NetworkMonitor"
 
 # Convert SVG to PNG for the AppImage icon (linuxdeploy prefers PNG).
 python -m pip install cairosvg pillow
-python - <<PY
-from cairosvg import svg2png
-svg2png(url="$ROOT/assets/icon.svg", write_to="$APPDIR/networkmonitor.png", output_width=256, output_height=256)
-PY
+python "$ROOT/build/svg_to_png.py" "$APPDIR/networkmonitor.png"
 cp "$APPDIR/networkmonitor.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/networkmonitor.png"
 
 cat > "$APPDIR/networkmonitor.desktop" <<EOF
