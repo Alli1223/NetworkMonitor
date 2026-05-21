@@ -30,12 +30,33 @@ QLabel#bigMetric {
     color: #f0f6fc;
 }
 
-QLabel#downAccent { color: #4f9dff; }
-QLabel#upAccent   { color: #22c55e; }
+QLabel#inlineMetric {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f0f6fc;
+}
+
+QLabel#downAccent { color: #4f9dff; font-weight: 600; }
+QLabel#upAccent   { color: #22c55e; font-weight: 600; }
 
 QLabel#subtle {
     color: #7d8590;
     font-size: 11px;
+}
+
+QPushButton#iconBtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 2px 6px;
+    color: #c9d1d9;
+    font-size: 16px;
+    min-width: 26px;
+    min-height: 26px;
+}
+QPushButton#iconBtn:hover {
+    background: #21262d;
+    border-color: #30363d;
 }
 
 QComboBox, QSpinBox, QPushButton, QCheckBox {

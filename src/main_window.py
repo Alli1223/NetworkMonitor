@@ -1,4 +1,4 @@
-"""Main application window: graph + controls + status bar + tray."""
+"""Main application window: minimal top row + large live graph + tray."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QAction, QCloseEvent, QIcon, QPixmap
+from PyQt6.QtGui import QAction, QCloseEvent, QIcon, QMoveEvent, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QSlider,
     QSpinBox,
     QStatusBar,
     QSystemTrayIcon,
@@ -64,10 +65,9 @@ def _asset_path(filename: str) -> str:
 
 
 def load_app_icon() -> QIcon:
-    """Load icon.svg as a QIcon, with sensible fallbacks at common tray sizes."""
+    """Load icon.svg as a QIcon, with a tiny fallback."""
     icon = QIcon(_asset_path("icon.svg"))
     if icon.isNull():
-        # Build a tiny fallback so the app still has an icon.
         pix = QPixmap(64, 64)
         pix.fill(Qt.GlobalColor.transparent)
         icon = QIcon(pix)
@@ -80,11 +80,22 @@ def load_app_icon() -> QIcon:
 
 
 class SettingsDialog(QDialog):
+    """Settings dialog. Includes interface picker and all preferences."""
+
     def __init__(self, current: AppSettings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(380)
+
+        # Interface picker (populated with whatever exists right now).
+        self.iface_combo = QComboBox()
+        self.iface_combo.setMinimumWidth(220)
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self._reload_interfaces)
+        iface_row = QHBoxLayout()
+        iface_row.addWidget(self.iface_combo, 1)
+        iface_row.addWidget(self.refresh_btn)
 
         self.history_spin = QSpinBox()
         self.history_spin.setRange(15, 600)
@@ -97,6 +108,23 @@ class SettingsDialog(QDialog):
         self.interval_spin.setSuffix(" ms")
         self.interval_spin.setValue(current.update_interval_ms)
 
+        # Window transparency: 30..100 percent. Below 30 the window becomes
+        # essentially invisible and uninteractive.
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(30, 100)
+        self.opacity_slider.setValue(max(30, min(100, current.window_opacity)))
+        self.opacity_value_lbl = QLabel(f"{self.opacity_slider.value()}%")
+        self.opacity_value_lbl.setMinimumWidth(40)
+        self.opacity_slider.valueChanged.connect(
+            lambda v: self.opacity_value_lbl.setText(f"{v}%")
+        )
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(self.opacity_slider, 1)
+        opacity_row.addWidget(self.opacity_value_lbl)
+
+        self.always_on_top_chk = QCheckBox("Always on top")
+        self.always_on_top_chk.setChecked(current.always_on_top)
+
         self.start_min_chk = QCheckBox("Start minimized to tray")
         self.start_min_chk.setChecked(current.start_minimized)
 
@@ -107,13 +135,28 @@ class SettingsDialog(QDialog):
         self.check_updates_chk.setChecked(current.check_updates_on_start)
 
         grid = QGridLayout()
-        grid.addWidget(QLabel("Graph history"), 0, 0)
-        grid.addWidget(self.history_spin, 0, 1)
-        grid.addWidget(QLabel("Update interval"), 1, 0)
-        grid.addWidget(self.interval_spin, 1, 1)
-        grid.addWidget(self.start_min_chk, 2, 0, 1, 2)
-        grid.addWidget(self.close_to_tray_chk, 3, 0, 1, 2)
-        grid.addWidget(self.check_updates_chk, 4, 0, 1, 2)
+        grid.setColumnStretch(1, 1)
+        grid.setVerticalSpacing(8)
+        row = 0
+        grid.addWidget(QLabel("Interface"), row, 0)
+        grid.addLayout(iface_row, row, 1)
+        row += 1
+        grid.addWidget(QLabel("Graph history"), row, 0)
+        grid.addWidget(self.history_spin, row, 1)
+        row += 1
+        grid.addWidget(QLabel("Update interval"), row, 0)
+        grid.addWidget(self.interval_spin, row, 1)
+        row += 1
+        grid.addWidget(QLabel("Transparency"), row, 0)
+        grid.addLayout(opacity_row, row, 1)
+        row += 1
+        grid.addWidget(self.always_on_top_chk, row, 0, 1, 2)
+        row += 1
+        grid.addWidget(self.start_min_chk, row, 0, 1, 2)
+        row += 1
+        grid.addWidget(self.close_to_tray_chk, row, 0, 1, 2)
+        row += 1
+        grid.addWidget(self.check_updates_chk, row, 0, 1, 2)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -126,13 +169,58 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
         layout.addWidget(buttons)
 
+        # Populate interfaces with currently saved selection preselected.
+        self._reload_interfaces(preferred=current.interface)
+
+    # ----- interface helpers -----
+
+    def _reload_interfaces(self, preferred: Optional[str] = None) -> None:
+        if preferred is None:
+            preferred = self.iface_combo.currentData()
+        self.iface_combo.blockSignals(True)
+        self.iface_combo.clear()
+        interfaces = list_interfaces()
+        chosen_index = -1
+        for i, info in enumerate(interfaces):
+            self.iface_combo.addItem(_iface_label(info), userData=info.name)
+            if preferred and info.name == preferred:
+                chosen_index = i
+        if chosen_index < 0:
+            for i, info in enumerate(interfaces):
+                if info.is_up and info.addresses:
+                    chosen_index = i
+                    break
+        if chosen_index < 0 and interfaces:
+            chosen_index = 0
+        if chosen_index >= 0:
+            self.iface_combo.setCurrentIndex(chosen_index)
+        self.iface_combo.blockSignals(False)
+
+    def selected_interface(self) -> Optional[str]:
+        return self.iface_combo.currentData()
+
     def apply_to(self, s: AppSettings) -> AppSettings:
+        s.interface = self.selected_interface()
         s.history_seconds = self.history_spin.value()
         s.update_interval_ms = self.interval_spin.value()
+        s.window_opacity = self.opacity_slider.value()
+        s.always_on_top = self.always_on_top_chk.isChecked()
         s.start_minimized = self.start_min_chk.isChecked()
         s.minimize_to_tray_on_close = self.close_to_tray_chk.isChecked()
         s.check_updates_on_start = self.check_updates_chk.isChecked()
         return s
+
+
+def _iface_label(info: InterfaceInfo) -> str:
+    """Short, readable interface label for the combobox."""
+    bits = [info.display_name]
+    status = "up" if info.is_up else "down"
+    if info.speed_mbps:
+        bits.append(f"{info.speed_mbps} Mb/s")
+    bits.append(status)
+    if info.addresses:
+        bits.append(info.addresses[0])
+    return "  ·  ".join(bits)
 
 
 # ---------------------------------------------------------------------------
@@ -145,26 +233,34 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(load_app_icon())
-        self.setMinimumSize(QSize(420, 260))
-        self.resize(520, 320)
+        self.setMinimumSize(QSize(320, 180))
+        self.resize(440, 240)
 
         self._store = SettingsStore()
         self._settings: AppSettings = self._store.load()
         self._sampler: Optional[NetworkSampler] = None
         self._force_quit = False
 
-        # Keep refs to threads so they aren't GC'd mid-flight.
+        # Workers / threads kept alive while they run.
         self._update_thread = None
         self._update_worker: Optional[UpdateCheckWorker] = None
         self._download_thread = None
         self._download_worker: Optional[DownloadWorker] = None
 
+        # Debounce timer for saving geometry after a move/resize.
+        self._geom_save_timer = QTimer(self)
+        self._geom_save_timer.setSingleShot(True)
+        self._geom_save_timer.setInterval(500)
+        self._geom_save_timer.timeout.connect(self._save_window_state)
+
         self._build_ui()
         self._build_tray()
-        self._populate_interfaces()
+        self._apply_window_flags()
+        self._apply_opacity()
         self._restore_window_state()
+        self._initialise_sampler(self._settings.interface)
 
-        # Timer drives sampling and graph updates.
+        # Sampling timer.
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(self._settings.update_interval_ms)
@@ -180,86 +276,58 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         outer = QVBoxLayout(central)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(10)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(6)
 
-        # Top row: interface picker + settings button
+        # ---- Top row: ↓ rate, ↑ rate, gear button --------------------------
         top_row = QHBoxLayout()
-        top_row.setSpacing(8)
-        top_label = QLabel("Interface")
-        top_label.setObjectName("subtle")
-        self.iface_combo = QComboBox()
-        self.iface_combo.setMinimumWidth(200)
-        self.iface_combo.currentIndexChanged.connect(self._on_interface_changed)
+        top_row.setSpacing(10)
 
-        self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.clicked.connect(self._populate_interfaces)
+        self.down_arrow = QLabel("↓")
+        self.down_arrow.setObjectName("downAccent")
+        self.down_value = QLabel("0 B/s")
+        self.down_value.setObjectName("inlineMetric")
 
-        self.settings_btn = QPushButton("Settings")
+        self.up_arrow = QLabel("↑")
+        self.up_arrow.setObjectName("upAccent")
+        self.up_value = QLabel("0 B/s")
+        self.up_value.setObjectName("inlineMetric")
+
+        # Separator dot between down and up
+        sep = QLabel("·")
+        sep.setObjectName("subtle")
+
+        # Status text (subtle, small) — interface name
+        self.status_lbl = QLabel("")
+        self.status_lbl.setObjectName("subtle")
+
+        # Settings gear button
+        self.settings_btn = QPushButton("⚙")  # ⚙
+        self.settings_btn.setObjectName("iconBtn")
+        self.settings_btn.setToolTip("Settings")
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.clicked.connect(self._open_settings)
 
-        top_row.addWidget(top_label)
-        top_row.addWidget(self.iface_combo, 1)
-        top_row.addWidget(self.refresh_btn)
+        top_row.addWidget(self.down_arrow)
+        top_row.addWidget(self.down_value)
+        top_row.addSpacing(4)
+        top_row.addWidget(sep)
+        top_row.addSpacing(4)
+        top_row.addWidget(self.up_arrow)
+        top_row.addWidget(self.up_value)
+        top_row.addSpacing(12)
+        top_row.addWidget(self.status_lbl, 1)  # stretches
         top_row.addWidget(self.settings_btn)
         outer.addLayout(top_row)
 
-        # Metric cards row
-        cards_row = QHBoxLayout()
-        cards_row.setSpacing(10)
-        self.down_card, self.down_value, self.down_total = self._build_metric_card(
-            "Download", DOWNLOAD_COLOR, "downAccent"
-        )
-        self.up_card, self.up_value, self.up_total = self._build_metric_card(
-            "Upload", UPLOAD_COLOR, "upAccent"
-        )
-        cards_row.addWidget(self.down_card, 1)
-        cards_row.addWidget(self.up_card, 1)
-        outer.addLayout(cards_row)
-
-        # Graph card
+        # ---- Graph -----------------------------------------------------------
         graph_card = QFrame()
         graph_card.setObjectName("card")
         graph_layout = QVBoxLayout(graph_card)
-        graph_layout.setContentsMargins(8, 8, 8, 8)
+        graph_layout.setContentsMargins(6, 6, 6, 6)
         self.graph = TrafficGraph(history_seconds=self._settings.history_seconds)
         graph_layout.addWidget(self.graph)
         outer.addWidget(graph_card, 1)
-
-        # Status bar
-        self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage(f"v{__version__}")
-
-    def _build_metric_card(self, title: str, color: str, accent_object_name: str):
-        card = QFrame()
-        card.setObjectName("card")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(2)
-
-        header = QHBoxLayout()
-        swatch = QLabel()
-        swatch.setFixedSize(10, 10)
-        swatch.setStyleSheet(f"background-color: {color}; border-radius: 5px;")
-        title_lbl = QLabel(title)
-        title_lbl.setObjectName("title")
-        header.addWidget(swatch)
-        header.addWidget(title_lbl)
-        header.addStretch(1)
-        layout.addLayout(header)
-
-        value_lbl = QLabel("0 B/s")
-        value_lbl.setObjectName("bigMetric")
-        value_lbl.setProperty("class", accent_object_name)
-        # Use objectName for QSS color rule
-        value_lbl.setObjectName(accent_object_name)
-        layout.addWidget(value_lbl)
-
-        total_lbl = QLabel("Total: 0 B")
-        total_lbl.setObjectName("subtle")
-        layout.addWidget(total_lbl)
-
-        return card, value_lbl, total_lbl
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(load_app_icon(), self)
@@ -270,6 +338,8 @@ class MainWindow(QMainWindow):
         show_act.triggered.connect(self._show_from_tray)
         hide_act = QAction("Hide window", self)
         hide_act.triggered.connect(self.hide)
+        settings_act = QAction("Settings…", self)
+        settings_act.triggered.connect(self._open_settings)
         check_act = QAction("Check for updates", self)
         check_act.triggered.connect(lambda: self._check_for_updates(silent=False))
         about_act = QAction(f"About {APP_NAME}", self)
@@ -280,6 +350,7 @@ class MainWindow(QMainWindow):
         menu.addAction(show_act)
         menu.addAction(hide_act)
         menu.addSeparator()
+        menu.addAction(settings_act)
         menu.addAction(check_act)
         menu.addAction(about_act)
         menu.addSeparator()
@@ -289,84 +360,79 @@ class MainWindow(QMainWindow):
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
+    # ------------------------------ Window flags ----------------------------
+
+    def _apply_window_flags(self) -> None:
+        """Apply 'always on top' (rebuilding flags requires re-show)."""
+        flags = self.windowFlags()
+        if self._settings.always_on_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        # setWindowFlags hides the window; only re-show if it was visible.
+        was_visible = self.isVisible()
+        self.setWindowFlags(flags)
+        if was_visible:
+            self.show()
+
+    def _apply_opacity(self) -> None:
+        """Map 30..100 percent setting onto setWindowOpacity()."""
+        pct = max(30, min(100, int(self._settings.window_opacity)))
+        self.setWindowOpacity(pct / 100.0)
+
     # ----------------------------- Interfaces -------------------------------
 
-    def _populate_interfaces(self) -> None:
-        previous = self.iface_combo.currentData() if self.iface_combo.count() else self._settings.interface
-        self.iface_combo.blockSignals(True)
-        self.iface_combo.clear()
-        interfaces = list_interfaces()
-        for info in interfaces:
-            label = self._iface_label(info)
-            self.iface_combo.addItem(label, userData=info.name)
-
-        # Pick the previously selected interface, or the first "up with IP", or index 0.
-        target_index = -1
-        if previous:
-            for i in range(self.iface_combo.count()):
-                if self.iface_combo.itemData(i) == previous:
-                    target_index = i
+    def _initialise_sampler(self, interface_name: Optional[str]) -> None:
+        """Pick a sampler interface: requested, or first up-with-IP, or first."""
+        candidates = list_interfaces()
+        chosen: Optional[str] = None
+        if interface_name:
+            for info in candidates:
+                if info.name == interface_name:
+                    chosen = info.name
                     break
-        if target_index < 0:
-            for i, info in enumerate(interfaces):
+        if chosen is None:
+            for info in candidates:
                 if info.is_up and info.addresses:
-                    target_index = i
+                    chosen = info.name
                     break
-        if target_index < 0 and interfaces:
-            target_index = 0
-        if target_index >= 0:
-            self.iface_combo.setCurrentIndex(target_index)
-        self.iface_combo.blockSignals(False)
-        self._on_interface_changed()
-
-    @staticmethod
-    def _iface_label(info: InterfaceInfo) -> str:
-        bits = [info.display_name]
-        status = "up" if info.is_up else "down"
-        if info.speed_mbps:
-            bits.append(f"{info.speed_mbps} Mb/s")
-        bits.append(status)
-        if info.addresses:
-            bits.append(info.addresses[0])
-        return "  ·  ".join(bits)
-
-    def _on_interface_changed(self) -> None:
-        name = self.iface_combo.currentData()
-        if not name:
+        if chosen is None and candidates:
+            chosen = candidates[0].name
+        if chosen is None:
+            self.status_lbl.setText("No network interfaces found")
             return
         if self._sampler is None:
-            self._sampler = NetworkSampler(name)
+            self._sampler = NetworkSampler(chosen)
         else:
-            self._sampler.set_interface(name)
+            self._sampler.set_interface(chosen)
+        self._settings.interface = chosen
+        self._store.save(self._settings)
         self.graph.reset()
         self.down_value.setText("0 B/s")
         self.up_value.setText("0 B/s")
-        self._settings.interface = name
-        self._store.save(self._settings)
-        self.statusBar().showMessage(f"Monitoring {name}  ·  v{__version__}")
+        self.status_lbl.setText(f"{chosen}  ·  v{__version__}")
 
     # -------------------------------- Tick ----------------------------------
 
     def _tick(self) -> None:
-        # Wrap in try/except so a single bad poll cannot kill the app.
         try:
             if self._sampler is None:
                 return
             rate = self._sampler.poll()
             if rate is None:
-                self.statusBar().showMessage(
-                    f"Interface '{self._sampler.interface}' unavailable  ·  v{__version__}"
+                self.status_lbl.setText(
+                    f"{self._sampler.interface} (unavailable)  ·  v{__version__}"
                 )
                 return
             self.graph.add_sample(rate.download_bps, rate.upload_bps)
             self.down_value.setText(format_rate(rate.download_bps))
             self.up_value.setText(format_rate(rate.upload_bps))
-            self.down_total.setText(f"Total: {format_bytes(rate.total_recv)}")
-            self.up_total.setText(f"Total: {format_bytes(rate.total_sent)}")
             self.tray.setToolTip(
                 f"{APP_NAME}\n"
                 f"↓ {format_rate(rate.download_bps)}   "
-                f"↑ {format_rate(rate.upload_bps)}"
+                f"↑ {format_rate(rate.upload_bps)}\n"
+                f"Total down: {format_bytes(rate.total_recv)}\n"
+                f"Total up:   {format_bytes(rate.total_sent)}"
             )
         except Exception:
             log.exception("Tick failed (will keep running)")
@@ -376,10 +442,15 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self._settings, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            previous_iface = self._settings.interface
             self._settings = dlg.apply_to(self._settings)
             self._store.save(self._settings)
             self._timer.setInterval(self._settings.update_interval_ms)
             self.graph.set_history_seconds(self._settings.history_seconds)
+            self._apply_opacity()
+            self._apply_window_flags()
+            if self._settings.interface != previous_iface:
+                self._initialise_sampler(self._settings.interface)
 
     # -------------------------------- Tray ----------------------------------
 
@@ -397,17 +468,17 @@ class MainWindow(QMainWindow):
 
     def _quit_application(self) -> None:
         self._force_quit = True
-        # Stop sampling timer first, then wait briefly for any worker threads.
+        self._save_window_state()
         try:
             self._timer.stop()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         for t in (self._update_thread, self._download_thread):
             try:
                 if t is not None and t.isRunning():
                     t.quit()
                     t.wait(1500)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         self.close()
         QApplication.instance().quit()
@@ -416,20 +487,16 @@ class MainWindow(QMainWindow):
 
     def _check_for_updates(self, silent: bool) -> None:
         if self._update_worker is not None:
-            return  # already in flight
+            return
         log.info("Checking for updates (silent=%s)", silent)
         worker = UpdateCheckWorker()
         worker.finished.connect(
             lambda info, err: self._on_update_check_done(info, err, silent)
         )
         thread = run_in_thread(worker)
-        # Release refs only once the thread has fully shut down — otherwise
-        # we can hit "QThread destroyed while still running" on Windows.
         thread.finished.connect(self._release_update_refs)
         self._update_worker = worker
         self._update_thread = thread
-        if not silent:
-            self.statusBar().showMessage("Checking for updates…")
 
     def _release_update_refs(self) -> None:
         self._update_worker = None
@@ -507,14 +574,14 @@ class MainWindow(QMainWindow):
             )
             try:
                 launch_installer(path)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 QMessageBox.warning(self, "Could not launch installer", str(exc))
                 return
             self._quit_application()
 
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finished)
-        progress.canceled.connect(lambda: None)  # best-effort; download isn't interruptible
+        progress.canceled.connect(lambda: None)
 
         thread = run_in_thread(worker)
         thread.finished.connect(self._release_download_refs)
@@ -539,19 +606,37 @@ class MainWindow(QMainWindow):
     def _restore_window_state(self) -> None:
         if self._settings.window_geometry:
             try:
-                self.restoreGeometry(self._settings.window_geometry)
-            except Exception:  # noqa: BLE001
-                pass
+                ok = self.restoreGeometry(self._settings.window_geometry)
+                log.info("restoreGeometry -> %s", ok)
+            except Exception:
+                log.exception("restoreGeometry failed")
         if self._settings.window_state:
             try:
                 self.restoreState(self._settings.window_state)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                log.exception("restoreState failed")
 
     def _save_window_state(self) -> None:
-        self._settings.window_geometry = bytes(self.saveGeometry())
-        self._settings.window_state = bytes(self.saveState())
-        self._store.save(self._settings)
+        # Don't save if the window is hidden — its geometry is then invalid.
+        if not self.isVisible():
+            return
+        try:
+            self._settings.window_geometry = bytes(self.saveGeometry())
+            self._settings.window_state = bytes(self.saveState())
+            self._store.save(self._settings)
+        except Exception:
+            log.exception("Failed to save window state")
+
+    # ----------------------------- Move / resize ----------------------------
+
+    def moveEvent(self, event: QMoveEvent) -> None:
+        super().moveEvent(event)
+        # Debounced save so we don't write QSettings on every pixel of a drag.
+        self._geom_save_timer.start()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._geom_save_timer.start()
 
     # ----------------------------- Close handling ---------------------------
 
@@ -560,7 +645,6 @@ class MainWindow(QMainWindow):
         if self._force_quit or not self._settings.minimize_to_tray_on_close:
             event.accept()
             return
-        # Minimize to tray instead of quitting
         event.ignore()
         self.hide()
         if self.tray.isVisible():
@@ -576,7 +660,8 @@ def create_app() -> QApplication:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("NetworkMonitor")
-    app.setQuitOnLastWindowClosed(False)  # tray keeps us alive
+    app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(DARK_QSS)
     app.setWindowIcon(load_app_icon())
+    # Save state once more on normal quit (catches signal-based exits too).
     return app

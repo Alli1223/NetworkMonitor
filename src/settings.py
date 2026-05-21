@@ -21,6 +21,8 @@ class AppSettings:
     start_minimized: bool = False
     minimize_to_tray_on_close: bool = True
     check_updates_on_start: bool = True
+    window_opacity: int = 100  # 30..100, percent
+    always_on_top: bool = False
     window_geometry: Optional[bytes] = None
     window_state: Optional[bytes] = None
     accent_color: str = "#4f9dff"  # download color accent
@@ -44,6 +46,8 @@ class SettingsStore:
         s.check_updates_on_start = self._to_bool(
             self._q.value("check_updates_on_start", s.check_updates_on_start)
         )
+        s.window_opacity = int(self._q.value("window_opacity", s.window_opacity, type=int))
+        s.always_on_top = self._to_bool(self._q.value("always_on_top", s.always_on_top))
         geom = self._q.value("window_geometry", None)
         s.window_geometry = bytes(geom) if geom else None
         state = self._q.value("window_state", None)
@@ -58,6 +62,8 @@ class SettingsStore:
         self._q.setValue("start_minimized", bool(s.start_minimized))
         self._q.setValue("minimize_to_tray_on_close", bool(s.minimize_to_tray_on_close))
         self._q.setValue("check_updates_on_start", bool(s.check_updates_on_start))
+        self._q.setValue("window_opacity", int(s.window_opacity))
+        self._q.setValue("always_on_top", bool(s.always_on_top))
         if s.window_geometry is not None:
             self._q.setValue("window_geometry", s.window_geometry)
         if s.window_state is not None:
