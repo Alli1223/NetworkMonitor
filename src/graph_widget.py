@@ -50,7 +50,7 @@ class TrafficGraph(pg.PlotWidget):
 
     double_clicked = pyqtSignal()
 
-    def __init__(self, history_seconds: int = 60, parent=None):
+    def __init__(self, history_seconds: int = 300, parent=None):
         super().__init__(
             parent=parent,
             axisItems={"left": RateAxis(orientation="left"), "bottom": TimeAxis(orientation="bottom")},

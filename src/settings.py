@@ -40,6 +40,11 @@ class SettingsStore:
         s = AppSettings()
         s.interface = self._q.value("interface", None, type=str) or None
         s.history_seconds = int(self._q.value("history_seconds", s.history_seconds, type=int))
+        # One-time migration: old default was 60s, new default is 300s (v0.2.1)
+        if not self._to_bool(self._q.value("_migrated_history_300", False)):
+            if s.history_seconds == 60:
+                s.history_seconds = 300
+            self._q.setValue("_migrated_history_300", True)
         s.update_interval_ms = int(self._q.value("update_interval_ms", s.update_interval_ms, type=int))
         s.start_minimized = self._to_bool(self._q.value("start_minimized", s.start_minimized))
         s.minimize_to_tray_on_close = self._to_bool(
