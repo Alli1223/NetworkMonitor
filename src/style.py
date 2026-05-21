@@ -143,4 +143,37 @@ QSlider::handle:horizontal {{
 QSlider::handle:horizontal:hover {{
     background: {colors.download};
 }}
+
+QPushButton#cardHeader {{
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 6px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: {mode.text_title};
+    min-height: 16px;
+}}
+QPushButton#cardHeader:hover {{
+    background: {mode.bg_input};
+}}
+
+QLabel#cardContent {{
+    color: {mode.text_subtle};
+    font-size: 11px;
+    padding: 0px 6px 2px 6px;
+}}
+
+QLineEdit {{
+    background-color: {mode.bg_input};
+    border: 1px solid {mode.border};
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: {mode.text_primary};
+    min-height: 22px;
+}}
+QLineEdit:hover {{
+    border-color: {colors.download};
+}}
 """

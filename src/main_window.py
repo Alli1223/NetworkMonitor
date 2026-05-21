@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from datetime import date
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
-from PyQt6.QtCore import QSize, Qt, QTimer
+from PyQt6.QtCore import QSize, QStandardPaths, Qt, QTimer
 from PyQt6.QtGui import QAction, QCloseEvent, QIcon, QMoveEvent, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -35,6 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .graph_widget import TrafficGraph
+from .latency import LatencyThread
 from .network_monitor import (
     InterfaceInfo,
     NetworkSampler,
@@ -42,7 +45,9 @@ from .network_monitor import (
     format_rate,
     list_interfaces,
 )
+from .process_monitor import get_top_processes
 from .settings import AppSettings, SettingsStore
+from .stats_tracker import DataUsageStore, SessionStats, format_duration
 from .style import generate_qss
 from .theme import COLOR_THEMES, MODES
 from .updater import (
@@ -73,6 +78,49 @@ def load_app_icon() -> QIcon:
         pix.fill(Qt.GlobalColor.transparent)
         icon = QIcon(pix)
     return icon
+
+
+# ---------------------------------------------------------------------------
+# Collapsible card widget
+# ---------------------------------------------------------------------------
+
+
+class CollapsibleCard(QFrame):
+    """Compact collapsible panel: clickable header + content label."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("card")
+        self._title = title
+        self._expanded = True
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(2)
+
+        self._header = QPushButton(f"▾ {title}")
+        self._header.setObjectName("cardHeader")
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._header.clicked.connect(self.toggle)
+        layout.addWidget(self._header)
+
+        self._content = QLabel("")
+        self._content.setObjectName("cardContent")
+        self._content.setWordWrap(True)
+        layout.addWidget(self._content)
+
+    def toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._content.setVisible(self._expanded)
+        arrow = "▾" if self._expanded else "▸"
+        self._header.setText(f"{arrow} {self._title}")
+
+    def set_expanded(self, expanded: bool) -> None:
+        if self._expanded != expanded:
+            self.toggle()
+
+    def set_content(self, text: str) -> None:
+        self._content.setText(text)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +197,19 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self.color_theme_combo.setCurrentIndex(idx)
 
+        self.latency_host_edit = QLineEdit()
+        self.latency_host_edit.setText(current.latency_host)
+        self.latency_host_edit.setPlaceholderText("e.g. 8.8.8.8")
+
+        self.latency_chk = QCheckBox("Enable latency monitoring")
+        self.latency_chk.setChecked(current.latency_enabled)
+
+        self.usage_threshold_spin = QSpinBox()
+        self.usage_threshold_spin.setRange(0, 10_000)
+        self.usage_threshold_spin.setSuffix(" GB")
+        self.usage_threshold_spin.setSpecialValueText("Disabled")
+        self.usage_threshold_spin.setValue(current.data_usage_threshold_gb)
+
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
         grid.setVerticalSpacing(8)
@@ -170,6 +231,14 @@ class SettingsDialog(QDialog):
         row += 1
         grid.addWidget(QLabel("Color theme"), row, 0)
         grid.addWidget(self.color_theme_combo, row, 1)
+        row += 1
+        grid.addWidget(QLabel("Latency host"), row, 0)
+        grid.addWidget(self.latency_host_edit, row, 1)
+        row += 1
+        grid.addWidget(self.latency_chk, row, 0, 1, 2)
+        row += 1
+        grid.addWidget(QLabel("Monthly alert"), row, 0)
+        grid.addWidget(self.usage_threshold_spin, row, 1)
         row += 1
         grid.addWidget(self.always_on_top_chk, row, 0, 1, 2)
         row += 1
@@ -231,6 +300,9 @@ class SettingsDialog(QDialog):
         s.check_updates_on_start = self.check_updates_chk.isChecked()
         s.theme_mode = self.mode_combo.currentData()
         s.color_theme = self.color_theme_combo.currentData()
+        s.latency_host = self.latency_host_edit.text().strip() or "8.8.8.8"
+        s.latency_enabled = self.latency_chk.isChecked()
+        s.data_usage_threshold_gb = self.usage_threshold_spin.value()
         return s
 
 
@@ -257,13 +329,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(load_app_icon())
         self.setMinimumSize(QSize(320, 180))
-        self.resize(440, 240)
+        self.resize(440, 340)
 
         self._store = SettingsStore()
         self._settings: AppSettings = self._store.load()
         self._sampler: Optional[NetworkSampler] = None
         self._force_quit = False
         self._frameless = False
+
+        # Session stats / data usage
+        self._session_stats = SessionStats()
+        data_dir = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppDataLocation
+        )
+        self._data_usage = DataUsageStore(data_dir or ".")
+        self._tick_count = 0
+        self._usage_alert_date = ""
+        self._last_latency_ms = -1.0
 
         # Workers / threads kept alive while they run.
         self._update_thread = None
@@ -284,10 +366,23 @@ class MainWindow(QMainWindow):
         self._restore_window_state()
         self._initialise_sampler(self._settings.interface)
 
+        # Latency monitoring
+        self._latency_thread = LatencyThread(
+            host=self._settings.latency_host, parent=self,
+        )
+        self._latency_thread.result.connect(self._on_latency_result)
+        if self._settings.latency_enabled:
+            self._latency_thread.start()
+
         # Sampling timer.
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(self._settings.update_interval_ms)
+
+        # Periodic data-usage save (every 30 s).
+        self._save_timer = QTimer(self)
+        self._save_timer.timeout.connect(self._data_usage.save)
+        self._save_timer.start(30_000)
 
         if self._settings.check_updates_on_start:
             QTimer.singleShot(2500, lambda: self._check_for_updates(silent=True))
@@ -303,7 +398,7 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(10, 8, 10, 8)
         outer.setSpacing(6)
 
-        # ---- Top row: ↓ rate, ↑ rate, gear button --------------------------
+        # ---- Top row: ↓ rate, ↑ rate, latency, gear button ----------------
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
 
@@ -317,16 +412,22 @@ class MainWindow(QMainWindow):
         self.up_value = QLabel("0 B/s")
         self.up_value.setObjectName("inlineMetric")
 
-        # Separator dot between down and up
-        sep = QLabel("·")
-        sep.setObjectName("subtle")
+        # Separator dots
+        sep1 = QLabel("·")
+        sep1.setObjectName("subtle")
+        sep2 = QLabel("·")
+        sep2.setObjectName("subtle")
+
+        # Latency label
+        self.latency_lbl = QLabel("")
+        self.latency_lbl.setObjectName("subtle")
 
         # Status text (subtle, small) — interface name
         self.status_lbl = QLabel("")
         self.status_lbl.setObjectName("subtle")
 
         # Settings gear button
-        self.settings_btn = QPushButton("⚙")  # ⚙
+        self.settings_btn = QPushButton("⚙")
         self.settings_btn.setObjectName("iconBtn")
         self.settings_btn.setToolTip("Settings")
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -335,10 +436,14 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self.down_arrow)
         top_row.addWidget(self.down_value)
         top_row.addSpacing(4)
-        top_row.addWidget(sep)
+        top_row.addWidget(sep1)
         top_row.addSpacing(4)
         top_row.addWidget(self.up_arrow)
         top_row.addWidget(self.up_value)
+        top_row.addSpacing(4)
+        top_row.addWidget(sep2)
+        top_row.addSpacing(4)
+        top_row.addWidget(self.latency_lbl)
         top_row.addSpacing(12)
         top_row.addWidget(self.status_lbl, 1)  # stretches
         top_row.addWidget(self.settings_btn)
@@ -353,6 +458,18 @@ class MainWindow(QMainWindow):
         self.graph.double_clicked.connect(self._toggle_frameless)
         graph_layout.addWidget(self.graph)
         outer.addWidget(graph_card, 1)
+
+        # ---- Collapsible cards -----------------------------------------------
+        self._session_card = CollapsibleCard("Session Stats")
+        outer.addWidget(self._session_card)
+
+        self._usage_card = CollapsibleCard("Data Usage")
+        self._usage_card.set_expanded(False)
+        outer.addWidget(self._usage_card)
+
+        self._process_card = CollapsibleCard("Top Processes")
+        self._process_card.set_expanded(False)
+        outer.addWidget(self._process_card)
 
         self._apply_theme()
 
@@ -400,8 +517,6 @@ class MainWindow(QMainWindow):
             flags |= Qt.WindowType.FramelessWindowHint
         else:
             flags &= ~Qt.WindowType.FramelessWindowHint
-        # setWindowFlags hides the window; save and restore geometry so the
-        # window doesn't jump when the title bar appears / disappears.
         was_visible = self.isVisible()
         geom = self.geometry()
         self.setWindowFlags(flags)
@@ -473,8 +588,96 @@ class MainWindow(QMainWindow):
                 f"Total down: {format_bytes(rate.total_recv)}\n"
                 f"Total up:   {format_bytes(rate.total_sent)}"
             )
+
+            # ---- Stats tracking ----
+            interval = self._settings.update_interval_ms / 1000.0
+            self._session_stats.update(
+                rate.download_bps, rate.upload_bps, interval,
+            )
+            self._data_usage.add_bytes(
+                rate.download_bps * interval,
+                rate.upload_bps * interval,
+            )
+
+            # ---- Update cards (at different frequencies) ----
+            self._update_session_card()
+
+            self._tick_count += 1
+            if self._tick_count % 10 == 0:
+                self._update_usage_card()
+            if self._tick_count % 5 == 0:
+                self._update_process_card()
+            if self._tick_count % 60 == 0:
+                self._check_usage_alert()
+                self._data_usage.prune_old()
+
         except Exception:
             log.exception("Tick failed (will keep running)")
+
+    # ------------------------------ Latency ---------------------------------
+
+    def _on_latency_result(self, ms: float) -> None:
+        self._last_latency_ms = ms
+        self.graph.add_latency_sample(ms if ms >= 0 else 0.0)
+        if ms >= 0:
+            self.latency_lbl.setText(f"{ms:.0f} ms")
+        else:
+            self.latency_lbl.setText("timeout")
+
+    # ------------------------------ Card updates ----------------------------
+
+    def _update_session_card(self) -> None:
+        s = self._session_stats
+        parts = [
+            f"↓ {format_bytes(s.total_downloaded)} total",
+            f"↑ {format_bytes(s.total_uploaded)} total",
+            f"Peak ↓ {format_rate(s.peak_download_bps)}",
+            f"Peak ↑ {format_rate(s.peak_upload_bps)}",
+            f"Duration: {format_duration(s.duration_seconds)}",
+        ]
+        self._session_card.set_content("   ".join(parts))
+
+    def _update_usage_card(self) -> None:
+        td, tu = self._data_usage.get_today()
+        wd, wu = self._data_usage.get_this_week()
+        md, mu = self._data_usage.get_this_month()
+        threshold = self._settings.data_usage_threshold_gb
+        lines = [
+            f"Today: ↓ {format_bytes(td)}  ↑ {format_bytes(tu)}",
+            f"This Week: ↓ {format_bytes(wd)}  ↑ {format_bytes(wu)}",
+            f"This Month: ↓ {format_bytes(md)}  ↑ {format_bytes(mu)}",
+        ]
+        if threshold > 0:
+            total_gb = (md + mu) / (1024 ** 3)
+            lines.append(f"Monthly limit: {total_gb:.1f} / {threshold} GB")
+        self._usage_card.set_content("\n".join(lines))
+
+    def _update_process_card(self) -> None:
+        procs = get_top_processes(5)
+        if not procs:
+            self._process_card.set_content(
+                "No data (run as administrator for process info)"
+            )
+            return
+        parts = [f"{p.name} ({p.connections})" for p in procs]
+        self._process_card.set_content("   ".join(parts))
+
+    def _check_usage_alert(self) -> None:
+        threshold = self._settings.data_usage_threshold_gb
+        if threshold <= 0:
+            return
+        md, mu = self._data_usage.get_this_month()
+        total_gb = (md + mu) / (1024 ** 3)
+        today = date.today().isoformat()
+        if total_gb >= threshold and self._usage_alert_date != today:
+            self._usage_alert_date = today
+            self.tray.showMessage(
+                "Data Usage Alert",
+                f"Monthly usage has reached {total_gb:.1f} GB "
+                f"(limit: {threshold} GB)",
+                load_app_icon(),
+                5000,
+            )
 
     # ------------------------------ Theme -----------------------------------
 
@@ -492,6 +695,8 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self._settings, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             previous_iface = self._settings.interface
+            prev_latency_host = self._settings.latency_host
+            prev_latency_enabled = self._settings.latency_enabled
             self._settings = dlg.apply_to(self._settings)
             self._store.save(self._settings)
             self._timer.setInterval(self._settings.update_interval_ms)
@@ -501,6 +706,15 @@ class MainWindow(QMainWindow):
             self._apply_theme()
             if self._settings.interface != previous_iface:
                 self._initialise_sampler(self._settings.interface)
+            # Restart latency thread if host or enabled changed
+            if (self._settings.latency_host != prev_latency_host
+                    or self._settings.latency_enabled != prev_latency_enabled):
+                if self._latency_thread.isRunning():
+                    self._latency_thread.stop()
+                self._latency_thread.set_host(self._settings.latency_host)
+                if self._settings.latency_enabled:
+                    self._latency_thread._stop = False
+                    self._latency_thread.start()
 
     # -------------------------------- Tray ----------------------------------
 
@@ -519,8 +733,20 @@ class MainWindow(QMainWindow):
     def _quit_application(self) -> None:
         self._force_quit = True
         self._save_window_state()
+
+        # Stop latency thread
+        if self._latency_thread.isRunning():
+            self._latency_thread.stop()
+
+        # Save data usage
+        self._data_usage.save()
+
         try:
             self._timer.stop()
+        except Exception:
+            pass
+        try:
+            self._save_timer.stop()
         except Exception:
             pass
         for t in (self._update_thread, self._download_thread):

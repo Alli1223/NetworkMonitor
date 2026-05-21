@@ -28,6 +28,9 @@ class AppSettings:
     window_state: Optional[bytes] = None
     theme_mode: str = DEFAULT_MODE
     color_theme: str = DEFAULT_COLOR_THEME
+    latency_host: str = "8.8.8.8"
+    latency_enabled: bool = True
+    data_usage_threshold_gb: int = 0  # 0 = disabled
 
 
 class SettingsStore:
@@ -61,6 +64,11 @@ class SettingsStore:
         s.window_state = bytes(state) if state else None
         s.theme_mode = self._q.value("theme_mode", s.theme_mode, type=str)
         s.color_theme = self._q.value("color_theme", s.color_theme, type=str)
+        s.latency_host = self._q.value("latency_host", s.latency_host, type=str)
+        s.latency_enabled = self._to_bool(self._q.value("latency_enabled", s.latency_enabled))
+        s.data_usage_threshold_gb = int(
+            self._q.value("data_usage_threshold_gb", s.data_usage_threshold_gb, type=int)
+        )
         return s
 
     def save(self, s: AppSettings) -> None:
@@ -78,6 +86,9 @@ class SettingsStore:
             self._q.setValue("window_state", s.window_state)
         self._q.setValue("theme_mode", s.theme_mode)
         self._q.setValue("color_theme", s.color_theme)
+        self._q.setValue("latency_host", s.latency_host)
+        self._q.setValue("latency_enabled", bool(s.latency_enabled))
+        self._q.setValue("data_usage_threshold_gb", int(s.data_usage_threshold_gb))
         self._q.sync()
 
     @staticmethod
