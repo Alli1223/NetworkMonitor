@@ -55,7 +55,10 @@ Name: "{commondesktop}\{#AppName}";          Filename: "{app}\{#AppExeName}"; Ta
 Name: "{userstartup}\{#AppName}";            Filename: "{app}\{#AppExeName}"; Tasks: startup
 
 [Run]
+; Interactive install: offer a "Launch" checkbox on the final page.
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+; Silent install (self-update): always re-launch the app automatically.
+Filename: "{app}\{#AppExeName}"; Flags: nowait skipifnotsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
