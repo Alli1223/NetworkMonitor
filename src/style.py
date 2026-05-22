@@ -176,4 +176,25 @@ QLineEdit {{
 QLineEdit:hover {{
     border-color: {colors.download};
 }}
+
+QFrame#sidebar {{
+    background-color: {mode.bg_primary};
+    border-left: 1px solid {mode.border_subtle};
+}}
+
+QPushButton#sidebarToggle {{
+    background: {mode.bg_secondary};
+    border: 1px solid {mode.border_subtle};
+    border-radius: 4px;
+    color: {mode.text_subtle};
+    font-size: 10px;
+    padding: 0px 2px;
+    min-width: 16px;
+    max-width: 16px;
+}}
+QPushButton#sidebarToggle:hover {{
+    background: {mode.bg_input};
+    border-color: {mode.border};
+    color: {mode.text_primary};
+}}
 """

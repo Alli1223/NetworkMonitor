@@ -31,6 +31,7 @@ class AppSettings:
     latency_host: str = "8.8.8.8"
     latency_enabled: bool = True
     data_usage_threshold_gb: int = 0  # 0 = disabled
+    sidebar_visible: bool = True
 
 
 class SettingsStore:
@@ -69,6 +70,7 @@ class SettingsStore:
         s.data_usage_threshold_gb = int(
             self._q.value("data_usage_threshold_gb", s.data_usage_threshold_gb, type=int)
         )
+        s.sidebar_visible = self._to_bool(self._q.value("sidebar_visible", s.sidebar_visible))
         return s
 
     def save(self, s: AppSettings) -> None:
@@ -89,6 +91,7 @@ class SettingsStore:
         self._q.setValue("latency_host", s.latency_host)
         self._q.setValue("latency_enabled", bool(s.latency_enabled))
         self._q.setValue("data_usage_threshold_gb", int(s.data_usage_threshold_gb))
+        self._q.setValue("sidebar_visible", bool(s.sidebar_visible))
         self._q.sync()
 
     @staticmethod

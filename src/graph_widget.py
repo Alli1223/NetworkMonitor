@@ -54,13 +54,32 @@ class LatencyAxis(pg.AxisItem):
         return [f"{int(round(v))} ms" for v in values]
 
 
+def _ema_smooth(data: list[float], alpha: float = 0.3) -> list[float]:
+    """Apply Exponential Moving Average smoothing.
+
+    *alpha* controls responsiveness: 0.0 = fully smoothed (flat), 1.0 = no
+    smoothing.  A value around 0.25-0.35 is a good balance for 1-second
+    network traffic samples.
+    """
+    if not data:
+        return data
+    out = [data[0]]
+    for i in range(1, len(data)):
+        out.append(alpha * data[i] + (1.0 - alpha) * out[-1])
+    return out
+
+
 class TrafficGraph(pg.PlotWidget):
     """Two stacked rolling curves: download (filled) and upload (line),
-    plus peak/average markers and a latency overlay on a secondary axis."""
+    plus peak/average markers and a latency overlay on a secondary axis.
+
+    Raw samples are kept in rolling deques; an EMA-smoothed version is
+    computed on each redraw for visually cleaner curves.
+    """
 
     double_clicked = pyqtSignal()
 
-    def __init__(self, history_seconds: int = 300, parent=None):
+    def __init__(self, history_seconds: int = 300, smooth_alpha: float = 0.3, parent=None):
         super().__init__(
             parent=parent,
             axisItems={
@@ -83,6 +102,7 @@ class TrafficGraph(pg.PlotWidget):
         self.setMouseEnabled(x=False, y=False)
 
         self._history = history_seconds
+        self._smooth_alpha = smooth_alpha
         self._download: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
         self._upload: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
         self._latency: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
@@ -239,29 +259,40 @@ class TrafficGraph(pg.PlotWidget):
     #  Render                                                             #
     # ------------------------------------------------------------------ #
 
+    def set_smooth_alpha(self, alpha: float) -> None:
+        """Change the EMA smoothing factor (0.0 .. 1.0)."""
+        self._smooth_alpha = max(0.0, min(1.0, alpha))
+        self._redraw()
+
     def _redraw(self) -> None:
         xs = self._xs
-        dl = list(self._download)
-        ul = list(self._upload)
+        dl_raw = list(self._download)
+        ul_raw = list(self._upload)
+
+        # Apply EMA smoothing for visually cleaner curves.
+        alpha = self._smooth_alpha
+        dl = _ema_smooth(dl_raw, alpha) if alpha < 1.0 else dl_raw
+        ul = _ema_smooth(ul_raw, alpha) if alpha < 1.0 else ul_raw
 
         self._down_curve.setData(xs, dl)
         self._up_curve.setData(xs, ul)
 
-        # Auto-scale Y to the visible window, with a sensible floor.
-        peak = max(max(dl, default=0.0), max(ul, default=0.0))
+        # Auto-scale Y to the *raw* peak so spikes aren't clipped.
+        peak = max(max(dl_raw, default=0.0), max(ul_raw, default=0.0))
         ymax = max(peak * 1.15, 1024.0)  # never below 1 KB/s
         self.setYRange(0, ymax, padding=0)
 
-        # Peak / average markers (rolling, based on visible data)
-        if dl:
-            self._peak_down_line.setValue(max(dl))
-            self._avg_down_line.setValue(sum(dl) / len(dl))
-        if ul:
-            self._peak_up_line.setValue(max(ul))
-            self._avg_up_line.setValue(sum(ul) / len(ul))
+        # Peak / average markers use raw data for accuracy.
+        if dl_raw:
+            self._peak_down_line.setValue(max(dl_raw))
+            self._avg_down_line.setValue(sum(dl_raw) / len(dl_raw))
+        if ul_raw:
+            self._peak_up_line.setValue(max(ul_raw))
+            self._avg_up_line.setValue(sum(ul_raw) / len(ul_raw))
 
-        # Latency curve (secondary axis)
-        lat = list(self._latency)
+        # Latency curve (secondary axis) — also smoothed.
+        lat_raw = list(self._latency)
+        lat = _ema_smooth(lat_raw, alpha) if alpha < 1.0 else lat_raw
         self._latency_curve.setData(xs, lat)
-        lat_peak = max(lat, default=1.0)
+        lat_peak = max(lat_raw, default=1.0)
         self._latency_vb.setYRange(0, max(lat_peak * 1.15, 10.0), padding=0)

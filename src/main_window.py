@@ -329,7 +329,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(load_app_icon())
         self.setMinimumSize(QSize(320, 180))
-        self.resize(440, 340)
+        self.resize(660, 340)
 
         self._store = SettingsStore()
         self._settings: AppSettings = self._store.load()
@@ -426,6 +426,13 @@ class MainWindow(QMainWindow):
         self.status_lbl = QLabel("")
         self.status_lbl.setObjectName("subtle")
 
+        # Sidebar toggle
+        self._sidebar_toggle = QPushButton("◀")
+        self._sidebar_toggle.setObjectName("sidebarToggle")
+        self._sidebar_toggle.setToolTip("Toggle sidebar")
+        self._sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_toggle.clicked.connect(self._toggle_sidebar)
+
         # Settings gear button
         self.settings_btn = QPushButton("⚙")
         self.settings_btn.setObjectName("iconBtn")
@@ -446,10 +453,15 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self.latency_lbl)
         top_row.addSpacing(12)
         top_row.addWidget(self.status_lbl, 1)  # stretches
+        top_row.addWidget(self._sidebar_toggle)
         top_row.addWidget(self.settings_btn)
         outer.addLayout(top_row)
 
-        # ---- Graph -----------------------------------------------------------
+        # ---- Body: graph + sidebar -------------------------------------------
+        body = QHBoxLayout()
+        body.setSpacing(0)
+
+        # Graph (fills all available space)
         graph_card = QFrame()
         graph_card.setObjectName("card")
         graph_layout = QVBoxLayout(graph_card)
@@ -457,19 +469,37 @@ class MainWindow(QMainWindow):
         self.graph = TrafficGraph(history_seconds=self._settings.history_seconds)
         self.graph.double_clicked.connect(self._toggle_frameless)
         graph_layout.addWidget(self.graph)
-        outer.addWidget(graph_card, 1)
+        body.addWidget(graph_card, 1)
 
-        # ---- Collapsible cards -----------------------------------------------
+        # Sidebar with collapsible cards
+        self._sidebar = QFrame()
+        self._sidebar.setObjectName("sidebar")
+        self._sidebar.setFixedWidth(210)
+        sidebar_layout = QVBoxLayout(self._sidebar)
+        sidebar_layout.setContentsMargins(6, 0, 2, 0)
+        sidebar_layout.setSpacing(6)
+
         self._session_card = CollapsibleCard("Session Stats")
-        outer.addWidget(self._session_card)
+        sidebar_layout.addWidget(self._session_card)
 
         self._usage_card = CollapsibleCard("Data Usage")
         self._usage_card.set_expanded(False)
-        outer.addWidget(self._usage_card)
+        sidebar_layout.addWidget(self._usage_card)
 
         self._process_card = CollapsibleCard("Top Processes")
         self._process_card.set_expanded(False)
-        outer.addWidget(self._process_card)
+        sidebar_layout.addWidget(self._process_card)
+
+        sidebar_layout.addStretch(1)
+        body.addWidget(self._sidebar)
+
+        outer.addLayout(body, 1)
+
+        # Restore sidebar state
+        self._sidebar.setVisible(self._settings.sidebar_visible)
+        self._sidebar_toggle.setText(
+            "◀" if self._settings.sidebar_visible else "▶"
+        )
 
         self._apply_theme()
 
@@ -528,6 +558,14 @@ class MainWindow(QMainWindow):
         """Toggle the window title bar on/off (double-click on graph)."""
         self._frameless = not self._frameless
         self._apply_window_flags()
+
+    def _toggle_sidebar(self) -> None:
+        """Show/hide the stats sidebar."""
+        visible = not self._sidebar.isVisible()
+        self._sidebar.setVisible(visible)
+        self._sidebar_toggle.setText("◀" if visible else "▶")
+        self._settings.sidebar_visible = visible
+        self._store.save(self._settings)
 
     def _apply_opacity(self) -> None:
         """Map 30..100 percent setting onto setWindowOpacity()."""
