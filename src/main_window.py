@@ -197,6 +197,9 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self.color_theme_combo.setCurrentIndex(idx)
 
+        self.graph_fill_chk = QCheckBox("Shade area under the download line")
+        self.graph_fill_chk.setChecked(current.graph_fill)
+
         self.latency_host_edit = QLineEdit()
         self.latency_host_edit.setText(current.latency_host)
         self.latency_host_edit.setPlaceholderText("e.g. 8.8.8.8")
@@ -231,6 +234,8 @@ class SettingsDialog(QDialog):
         row += 1
         grid.addWidget(QLabel("Color theme"), row, 0)
         grid.addWidget(self.color_theme_combo, row, 1)
+        row += 1
+        grid.addWidget(self.graph_fill_chk, row, 0, 1, 2)
         row += 1
         grid.addWidget(QLabel("Latency host"), row, 0)
         grid.addWidget(self.latency_host_edit, row, 1)
@@ -300,6 +305,7 @@ class SettingsDialog(QDialog):
         s.check_updates_on_start = self.check_updates_chk.isChecked()
         s.theme_mode = self.mode_combo.currentData()
         s.color_theme = self.color_theme_combo.currentData()
+        s.graph_fill = self.graph_fill_chk.isChecked()
         s.latency_host = self.latency_host_edit.text().strip() or "8.8.8.8"
         s.latency_enabled = self.latency_chk.isChecked()
         s.data_usage_threshold_gb = self.usage_threshold_spin.value()
@@ -466,7 +472,10 @@ class MainWindow(QMainWindow):
         graph_card.setObjectName("card")
         graph_layout = QVBoxLayout(graph_card)
         graph_layout.setContentsMargins(6, 6, 6, 6)
-        self.graph = TrafficGraph(history_seconds=self._settings.history_seconds)
+        self.graph = TrafficGraph(
+            history_seconds=self._settings.history_seconds,
+            fill_enabled=self._settings.graph_fill,
+        )
         self.graph.double_clicked.connect(self._toggle_frameless)
         graph_layout.addWidget(self.graph)
         body.addWidget(graph_card, 1)
@@ -739,6 +748,7 @@ class MainWindow(QMainWindow):
             self._store.save(self._settings)
             self._timer.setInterval(self._settings.update_interval_ms)
             self.graph.set_history_seconds(self._settings.history_seconds)
+            self.graph.set_fill_enabled(self._settings.graph_fill)
             self._apply_opacity()
             self._apply_window_flags()
             self._apply_theme()

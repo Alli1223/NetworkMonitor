@@ -70,8 +70,9 @@ def _ema_smooth(data: list[float], alpha: float = 0.3) -> list[float]:
 
 
 class TrafficGraph(pg.PlotWidget):
-    """Two stacked rolling curves: download (filled) and upload (line),
-    plus peak/average markers and a latency overlay on a secondary axis.
+    """Two stacked rolling curves: download (optionally filled) and upload
+    (line), plus peak/average markers and a latency overlay on a secondary
+    axis.
 
     Raw samples are kept in rolling deques; an EMA-smoothed version is
     computed on each redraw for visually cleaner curves.
@@ -79,7 +80,8 @@ class TrafficGraph(pg.PlotWidget):
 
     double_clicked = pyqtSignal()
 
-    def __init__(self, history_seconds: int = 300, smooth_alpha: float = 0.3, parent=None):
+    def __init__(self, history_seconds: int = 300, smooth_alpha: float = 0.3,
+                 fill_enabled: bool = True, parent=None):
         super().__init__(
             parent=parent,
             axisItems={
@@ -103,6 +105,7 @@ class TrafficGraph(pg.PlotWidget):
 
         self._history = history_seconds
         self._smooth_alpha = smooth_alpha
+        self._fill_enabled = fill_enabled
         self._download: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
         self._upload: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
         self._latency: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
@@ -110,17 +113,17 @@ class TrafficGraph(pg.PlotWidget):
         # Time axis goes from -(history-1) ... 0
         self._xs = list(range(-(history_seconds - 1), 1))
 
-        # Download: filled area
+        # Download: line with optional filled area underneath
         self._down_curve = self.plot(
             self._xs, list(self._download),
-            pen=pg.mkPen(QColor(DOWNLOAD_COLOR), width=2),
-            fillLevel=0,
+            pen=pg.mkPen(QColor(DOWNLOAD_COLOR), width=1),
+            fillLevel=0 if fill_enabled else None,
             brush=pg.mkBrush(QColor(79, 157, 255, 60)),
         )
         # Upload: line
         self._up_curve = self.plot(
             self._xs, list(self._upload),
-            pen=pg.mkPen(QColor(UPLOAD_COLOR), width=2),
+            pen=pg.mkPen(QColor(UPLOAD_COLOR), width=1),
         )
 
         # Peak / average horizontal markers
@@ -200,11 +203,11 @@ class TrafficGraph(pg.PlotWidget):
         p.getAxis("bottom").setPen(QColor(mode.border))
 
         # Bandwidth curves
-        self._down_curve.setPen(pg.mkPen(QColor(colors.download), width=2))
+        self._down_curve.setPen(pg.mkPen(QColor(colors.download), width=1))
         self._down_curve.setBrush(
             pg.mkBrush(QColor(colors.fill_r, colors.fill_g, colors.fill_b, colors.fill_a))
         )
-        self._up_curve.setPen(pg.mkPen(QColor(colors.upload), width=2))
+        self._up_curve.setPen(pg.mkPen(QColor(colors.upload), width=1))
 
         # Peak / average markers — derived from theme with reduced alpha
         dl_peak = QColor(colors.download); dl_peak.setAlpha(80)
@@ -263,6 +266,13 @@ class TrafficGraph(pg.PlotWidget):
         """Change the EMA smoothing factor (0.0 .. 1.0)."""
         self._smooth_alpha = max(0.0, min(1.0, alpha))
         self._redraw()
+
+    def set_fill_enabled(self, enabled: bool) -> None:
+        """Toggle the shaded area under the download curve."""
+        if enabled == self._fill_enabled:
+            return
+        self._fill_enabled = enabled
+        self._down_curve.setFillLevel(0 if enabled else None)
 
     def _redraw(self) -> None:
         xs = self._xs
