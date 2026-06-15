@@ -14,7 +14,10 @@ A lightweight cross-platform network traffic monitor for Windows and Linux. Pick
   (bundled). CPU/motherboard temps need ring-0 access, so the app offers a one-click
   "Run as administrator" from the Temperatures card when elevation is required.
 - Pick any network interface; remembers your choice
-- Compact, dark, modern UI designed to live in a desktop corner
+- Compact, dark, modern UI designed to live in a desktop corner — frameless by
+  default (no native title bar) with custom minimize/close buttons; drag the top
+  bar to move, drag the bottom-right grip to resize, or double-click a graph to
+  toggle the native title bar back
 - System tray icon with show/hide/quit + tooltip showing current rates
 - Optional "minimize to tray on close" and "start minimized"
 - Settings persisted via `QSettings` (registry on Windows, `~/.config` on Linux)

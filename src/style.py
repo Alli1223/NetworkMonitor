@@ -202,4 +202,26 @@ QPushButton#sidebarToggle:hover {{
     border-color: {mode.border};
     color: {mode.text_primary};
 }}
+
+QPushButton#winBtn, QPushButton#winClose {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: {mode.text_title};
+    font-size: 13px;
+    padding: 0px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 24px;
+}}
+QPushButton#winBtn:hover {{
+    background: {mode.bg_input};
+    border-color: {mode.border};
+    color: {mode.text_bright};
+}}
+QPushButton#winClose:hover {{
+    background: #e81123;
+    border-color: #e81123;
+    color: #ffffff;
+}}
 """

@@ -12,7 +12,15 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 from PyQt6.QtCore import QSize, QStandardPaths, Qt, QTimer
-from PyQt6.QtGui import QAction, QCloseEvent, QIcon, QMoveEvent, QPixmap, QResizeEvent
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QIcon,
+    QMouseEvent,
+    QMoveEvent,
+    QPixmap,
+    QResizeEvent,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -29,6 +37,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QSizeGrip,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -95,6 +104,23 @@ METRIC_SPECS = [
     ("gpu",     "GPU",     "#22c55e", "percent", True,  100.0),
     ("disk",    "Disk",    "#f59e0b", "rate",    False, None),
 ]
+
+
+class DragBar(QWidget):
+    """Top bar that acts as the window's title bar when frameless.
+
+    Pressing anywhere on it that isn't a child button starts a native window
+    move, so the user can reposition a frameless window by dragging the bar.
+    """
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            handle = self.window().windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +224,13 @@ class SettingsDialog(QDialog):
         self.always_on_top_chk = QCheckBox("Always on top")
         self.always_on_top_chk.setChecked(current.always_on_top)
 
+        self.frameless_chk = QCheckBox("Hide native title bar (custom window buttons)")
+        self.frameless_chk.setChecked(current.frameless)
+        self.frameless_chk.setToolTip(
+            "Removes the Windows title bar. Drag the top bar to move the window; "
+            "use the custom – and ✕ buttons. You can also double-click a graph to toggle."
+        )
+
         self.start_min_chk = QCheckBox("Start minimized to tray")
         self.start_min_chk.setChecked(current.start_minimized)
 
@@ -280,6 +313,8 @@ class SettingsDialog(QDialog):
         row += 1
         grid.addWidget(self.always_on_top_chk, row, 0, 1, 2)
         row += 1
+        grid.addWidget(self.frameless_chk, row, 0, 1, 2)
+        row += 1
         grid.addWidget(self.start_min_chk, row, 0, 1, 2)
         row += 1
         grid.addWidget(self.close_to_tray_chk, row, 0, 1, 2)
@@ -333,6 +368,7 @@ class SettingsDialog(QDialog):
         s.update_interval_ms = self.interval_spin.value()
         s.window_opacity = self.opacity_slider.value()
         s.always_on_top = self.always_on_top_chk.isChecked()
+        s.frameless = self.frameless_chk.isChecked()
         s.start_minimized = self.start_min_chk.isChecked()
         s.minimize_to_tray_on_close = self.close_to_tray_chk.isChecked()
         s.check_updates_on_start = self.check_updates_chk.isChecked()
@@ -376,7 +412,7 @@ class MainWindow(QMainWindow):
         self._sampler: Optional[NetworkSampler] = None
         self._sys_sampler = SystemSampler()
         self._force_quit = False
-        self._frameless = False
+        self._frameless = self._settings.frameless
 
         # Temperature state (filled by the LHM background thread / NVML).
         self._last_temp: Optional[TempSample] = None
@@ -449,8 +485,10 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(10, 8, 10, 8)
         outer.setSpacing(6)
 
-        # ---- Top row: ↓ rate, ↑ rate, latency, gear button ----------------
-        top_row = QHBoxLayout()
+        # ---- Top row: doubles as the drag handle / title bar --------------
+        self._drag_bar = DragBar()
+        top_row = QHBoxLayout(self._drag_bar)
+        top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(10)
 
         self.down_arrow = QLabel("↓")
@@ -498,6 +536,19 @@ class MainWindow(QMainWindow):
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.clicked.connect(self._open_settings)
 
+        # Custom window controls (shown when frameless, replacing the native bar).
+        self._min_btn = QPushButton("–")  # en dash, looks like a minimize glyph
+        self._min_btn.setObjectName("winBtn")
+        self._min_btn.setToolTip("Minimize")
+        self._min_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._min_btn.clicked.connect(self.showMinimized)
+
+        self._close_btn = QPushButton("✕")  # multiplication x
+        self._close_btn.setObjectName("winClose")
+        self._close_btn.setToolTip("Close")
+        self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_btn.clicked.connect(self.close)
+
         top_row.addWidget(self._rail_toggle)
         top_row.addSpacing(4)
         top_row.addWidget(self.down_arrow)
@@ -515,7 +566,10 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self.status_lbl, 1)  # stretches
         top_row.addWidget(self._sidebar_toggle)
         top_row.addWidget(self.settings_btn)
-        outer.addLayout(top_row)
+        top_row.addSpacing(6)
+        top_row.addWidget(self._min_btn)
+        top_row.addWidget(self._close_btn)
+        outer.addWidget(self._drag_bar)
 
         # ---- Body: left rail + graph stack + sidebar -------------------------
         body = QHBoxLayout()
@@ -597,6 +651,11 @@ class MainWindow(QMainWindow):
             initial = "network"
         self._select_metric(initial)
         self._temps_card.set_content("Reading sensors…")
+
+        # Bottom-right size grip so a frameless window can still be resized.
+        # Kept as a direct child of the window and repositioned in resizeEvent.
+        self._size_grip = QSizeGrip(self)
+        self._size_grip.resize(16, 16)
 
         self._apply_theme()
 
@@ -684,13 +743,30 @@ class MainWindow(QMainWindow):
         geom = self.geometry()
         self.setWindowFlags(flags)
         self.setGeometry(geom)
+        # Custom min/close + resize grip belong to the frameless chrome; when a
+        # native title bar is showing they would be redundant, so hide them.
+        for w in (self._min_btn, self._close_btn):
+            w.setVisible(self._frameless)
+        if hasattr(self, "_size_grip"):
+            self._size_grip.setVisible(self._frameless)
+            self._reposition_size_grip()
         if was_visible:
             self.show()
 
     def _toggle_frameless(self) -> None:
-        """Toggle the window title bar on/off (double-click on graph)."""
+        """Toggle the native title bar on/off (double-click on a graph)."""
         self._frameless = not self._frameless
+        self._settings.frameless = self._frameless
+        self._store.save(self._settings)
         self._apply_window_flags()
+
+    def _reposition_size_grip(self) -> None:
+        """Keep the size grip pinned to the bottom-right corner."""
+        if not hasattr(self, "_size_grip"):
+            return
+        g = self._size_grip
+        g.move(self.width() - g.width(), self.height() - g.height())
+        g.raise_()
 
     def _toggle_sidebar(self) -> None:
         """Show/hide the stats sidebar."""
@@ -1002,6 +1078,7 @@ class MainWindow(QMainWindow):
                 if key != "network":
                     page.set_history_seconds(self._settings.history_seconds)
             self._apply_opacity()
+            self._frameless = self._settings.frameless
             self._apply_window_flags()
             self._apply_theme()
             if self._settings.interface != previous_iface:
@@ -1234,6 +1311,7 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        self._reposition_size_grip()
         self._geom_save_timer.start()
 
     # ----------------------------- Close handling ---------------------------

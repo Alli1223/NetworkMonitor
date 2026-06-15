@@ -24,6 +24,7 @@ class AppSettings:
     check_updates_on_start: bool = True
     window_opacity: int = 100  # 30..100, percent
     always_on_top: bool = False
+    frameless: bool = True  # no native title bar; custom min/close buttons
     window_geometry: Optional[bytes] = None
     window_state: Optional[bytes] = None
     theme_mode: str = DEFAULT_MODE
@@ -63,6 +64,7 @@ class SettingsStore:
         )
         s.window_opacity = int(self._q.value("window_opacity", s.window_opacity, type=int))
         s.always_on_top = self._to_bool(self._q.value("always_on_top", s.always_on_top))
+        s.frameless = self._to_bool(self._q.value("frameless", s.frameless))
         geom = self._q.value("window_geometry", None)
         s.window_geometry = bytes(geom) if geom else None
         state = self._q.value("window_state", None)
@@ -90,6 +92,7 @@ class SettingsStore:
         self._q.setValue("check_updates_on_start", bool(s.check_updates_on_start))
         self._q.setValue("window_opacity", int(s.window_opacity))
         self._q.setValue("always_on_top", bool(s.always_on_top))
+        self._q.setValue("frameless", bool(s.frameless))
         if s.window_geometry is not None:
             self._q.setValue("window_geometry", s.window_geometry)
         if s.window_state is not None:
