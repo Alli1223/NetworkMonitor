@@ -5,6 +5,14 @@ A lightweight cross-platform network traffic monitor for Windows and Linux. Pick
 ## Features
 
 - Live upload/download graph (updates every second by default)
+- Task-Manager-style system panel: a left rail of clickable mini-graph tiles for
+  **CPU, RAM, GPU and Disk** usage — click a tile to expand its full-size history
+  graph in the main area (network included)
+- **Temperatures**: GPU temperature (NVIDIA, via NVML — no admin needed) plus CPU
+  package and motherboard/in-case temperatures via
+  [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+  (bundled). CPU/motherboard temps need ring-0 access, so the app offers a one-click
+  "Run as administrator" from the Temperatures card when elevation is required.
 - Pick any network interface; remembers your choice
 - Compact, dark, modern UI designed to live in a desktop corner
 - System tray icon with show/hide/quit + tooltip showing current rates

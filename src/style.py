@@ -182,6 +182,11 @@ QFrame#sidebar {{
     border-left: 1px solid {mode.border_subtle};
 }}
 
+QFrame#leftRail {{
+    background-color: {mode.bg_primary};
+    border-right: 1px solid {mode.border_subtle};
+}}
+
 QPushButton#sidebarToggle {{
     background: {mode.bg_secondary};
     border: 1px solid {mode.border_subtle};

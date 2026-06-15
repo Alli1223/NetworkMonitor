@@ -6,6 +6,7 @@ no console, on Linux it produces a single executable suitable for bundling
 into an AppImage.
 """
 
+import glob
 import os
 import sys
 
@@ -15,13 +16,27 @@ here = os.path.abspath(os.path.dirname(SPEC))  # noqa: F821  (SPEC injected by P
 datas = [
     (os.path.join(here, "assets", "icon.svg"), "assets"),
 ]
+binaries = []
+hiddenimports = ["pynvml"]
+
+# Windows-only: bundle the LibreHardwareMonitor DLLs (CPU/motherboard temps)
+# and the pythonnet / clr_loader runtime needed to load them.
+if sys.platform.startswith("win"):
+    for dll in glob.glob(os.path.join(here, "vendor", "lhm", "*.dll")):
+        datas.append((dll, os.path.join("vendor", "lhm")))
+    from PyInstaller.utils.hooks import collect_all
+    for pkg in ("pythonnet", "clr_loader"):
+        pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+        datas += pkg_datas
+        binaries += pkg_binaries
+        hiddenimports += pkg_hidden
 
 a = Analysis(
     [os.path.join(here, "main.py")],
     pathex=[here],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
     excludes=[],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import sys
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QStatusBar,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -38,6 +40,8 @@ from PyQt6.QtWidgets import (
 
 from .graph_widget import TrafficGraph
 from .latency import LatencyThread
+from .metric_graph import MetricGraph
+from .mini_graph import MiniGraphTile
 from .network_monitor import (
     InterfaceInfo,
     NetworkSampler,
@@ -49,6 +53,8 @@ from .process_monitor import get_top_processes
 from .settings import AppSettings, SettingsStore
 from .stats_tracker import DataUsageStore, SessionStats, format_duration
 from .style import generate_qss
+from .system_monitor import SystemSampler
+from .temperature_monitor import TempSample, TemperatureThread, is_admin
 from .theme import COLOR_THEMES, MODES
 from .updater import (
     DownloadWorker,
@@ -80,6 +86,17 @@ def load_app_icon() -> QIcon:
     return icon
 
 
+# Left-rail metric tiles / detail pages.
+# (key, title, accent, graph_mode, with_temp_overlay, tile_max_value)
+METRIC_SPECS = [
+    ("network", "Network", "#4f9dff", "rate",    False, None),
+    ("cpu",     "CPU",     "#4f9dff", "percent", True,  100.0),
+    ("ram",     "RAM",     "#a855f7", "percent", False, 100.0),
+    ("gpu",     "GPU",     "#22c55e", "percent", True,  100.0),
+    ("disk",    "Disk",    "#f59e0b", "rate",    False, None),
+]
+
+
 # ---------------------------------------------------------------------------
 # Collapsible card widget
 # ---------------------------------------------------------------------------
@@ -107,7 +124,14 @@ class CollapsibleCard(QFrame):
         self._content = QLabel("")
         self._content.setObjectName("cardContent")
         self._content.setWordWrap(True)
+        # Leave TextFormat on auto: plain-text cards keep their newlines, while
+        # cards that pass HTML (with <br>/<a>) are auto-detected as rich text.
+        self._content.setOpenExternalLinks(False)
         layout.addWidget(self._content)
+
+    def connect_link(self, handler) -> None:
+        """Connect a callback to anchor clicks in the content (linkActivated)."""
+        self._content.linkActivated.connect(handler)
 
     def toggle(self) -> None:
         self._expanded = not self._expanded
@@ -200,6 +224,13 @@ class SettingsDialog(QDialog):
         self.graph_fill_chk = QCheckBox("Shade area under the download line")
         self.graph_fill_chk.setChecked(current.graph_fill)
 
+        self.temps_chk = QCheckBox("Monitor CPU / motherboard temperatures")
+        self.temps_chk.setChecked(current.temps_enabled)
+        self.temps_chk.setToolTip(
+            "Uses LibreHardwareMonitor. CPU and motherboard temps need the app "
+            "to run as administrator; GPU temp works without it."
+        )
+
         self.latency_host_edit = QLineEdit()
         self.latency_host_edit.setText(current.latency_host)
         self.latency_host_edit.setPlaceholderText("e.g. 8.8.8.8")
@@ -236,6 +267,8 @@ class SettingsDialog(QDialog):
         grid.addWidget(self.color_theme_combo, row, 1)
         row += 1
         grid.addWidget(self.graph_fill_chk, row, 0, 1, 2)
+        row += 1
+        grid.addWidget(self.temps_chk, row, 0, 1, 2)
         row += 1
         grid.addWidget(QLabel("Latency host"), row, 0)
         grid.addWidget(self.latency_host_edit, row, 1)
@@ -306,6 +339,7 @@ class SettingsDialog(QDialog):
         s.theme_mode = self.mode_combo.currentData()
         s.color_theme = self.color_theme_combo.currentData()
         s.graph_fill = self.graph_fill_chk.isChecked()
+        s.temps_enabled = self.temps_chk.isChecked()
         s.latency_host = self.latency_host_edit.text().strip() or "8.8.8.8"
         s.latency_enabled = self.latency_chk.isChecked()
         s.data_usage_threshold_gb = self.usage_threshold_spin.value()
@@ -340,8 +374,13 @@ class MainWindow(QMainWindow):
         self._store = SettingsStore()
         self._settings: AppSettings = self._store.load()
         self._sampler: Optional[NetworkSampler] = None
+        self._sys_sampler = SystemSampler()
         self._force_quit = False
         self._frameless = False
+
+        # Temperature state (filled by the LHM background thread / NVML).
+        self._last_temp: Optional[TempSample] = None
+        self._last_gpu_temp: Optional[float] = None
 
         # Session stats / data usage
         self._session_stats = SessionStats()
@@ -379,6 +418,12 @@ class MainWindow(QMainWindow):
         self._latency_thread.result.connect(self._on_latency_result)
         if self._settings.latency_enabled:
             self._latency_thread.start()
+
+        # Temperature monitoring (CPU/motherboard via LibreHardwareMonitor).
+        self._temp_thread = TemperatureThread(interval_s=2.0, parent=self)
+        self._temp_thread.result.connect(self._on_temp_result)
+        if self._settings.temps_enabled:
+            self._temp_thread.start()
 
         # Sampling timer.
         self._timer = QTimer(self)
@@ -432,6 +477,13 @@ class MainWindow(QMainWindow):
         self.status_lbl = QLabel("")
         self.status_lbl.setObjectName("subtle")
 
+        # Left-rail (system panel) toggle
+        self._rail_toggle = QPushButton("▦")
+        self._rail_toggle.setObjectName("sidebarToggle")
+        self._rail_toggle.setToolTip("Toggle system panel")
+        self._rail_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._rail_toggle.clicked.connect(self._toggle_left_rail)
+
         # Sidebar toggle
         self._sidebar_toggle = QPushButton("◀")
         self._sidebar_toggle.setObjectName("sidebarToggle")
@@ -446,6 +498,8 @@ class MainWindow(QMainWindow):
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.clicked.connect(self._open_settings)
 
+        top_row.addWidget(self._rail_toggle)
+        top_row.addSpacing(4)
         top_row.addWidget(self.down_arrow)
         top_row.addWidget(self.down_value)
         top_row.addSpacing(4)
@@ -463,21 +517,43 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self.settings_btn)
         outer.addLayout(top_row)
 
-        # ---- Body: graph + sidebar -------------------------------------------
+        # ---- Body: left rail + graph stack + sidebar -------------------------
         body = QHBoxLayout()
         body.setSpacing(0)
 
-        # Graph (fills all available space)
+        self._tiles: dict[str, MiniGraphTile] = {}
+        self._pages: dict[str, object] = {}
+
+        # Graph area: a stack of detail graphs (network + each system metric).
         graph_card = QFrame()
         graph_card.setObjectName("card")
         graph_layout = QVBoxLayout(graph_card)
         graph_layout.setContentsMargins(6, 6, 6, 6)
+
+        self._graph_stack = QStackedWidget()
         self.graph = TrafficGraph(
             history_seconds=self._settings.history_seconds,
             fill_enabled=self._settings.graph_fill,
         )
         self.graph.double_clicked.connect(self._toggle_frameless)
-        graph_layout.addWidget(self.graph)
+        self._graph_stack.addWidget(self.graph)
+        self._pages["network"] = self.graph
+
+        for key, title, accent, mode, with_temp, _max in METRIC_SPECS:
+            if key == "network":
+                continue
+            page = MetricGraph(
+                history_seconds=self._settings.history_seconds,
+                mode=mode, accent=accent, with_temp=with_temp,
+            )
+            page.double_clicked.connect(self._toggle_frameless)
+            self._graph_stack.addWidget(page)
+            self._pages[key] = page
+        graph_layout.addWidget(self._graph_stack)
+
+        # Left rail of clickable metric tiles.
+        self._left_rail = self._build_left_rail()
+        body.addWidget(self._left_rail)
         body.addWidget(graph_card, 1)
 
         # Sidebar with collapsible cards
@@ -490,6 +566,10 @@ class MainWindow(QMainWindow):
 
         self._session_card = CollapsibleCard("Session Stats")
         sidebar_layout.addWidget(self._session_card)
+
+        self._temps_card = CollapsibleCard("Temperatures")
+        self._temps_card.connect_link(self._on_card_link)
+        sidebar_layout.addWidget(self._temps_card)
 
         self._usage_card = CollapsibleCard("Data Usage")
         self._usage_card.set_expanded(False)
@@ -510,7 +590,51 @@ class MainWindow(QMainWindow):
             "◀" if self._settings.sidebar_visible else "▶"
         )
 
+        # Restore left-rail state + previously selected detail metric.
+        self._left_rail.setVisible(self._settings.left_rail_visible)
+        initial = self._settings.selected_metric
+        if initial not in self._pages:
+            initial = "network"
+        self._select_metric(initial)
+        self._temps_card.set_content("Reading sensors…")
+
         self._apply_theme()
+
+    # ----------------------------- Left rail --------------------------------
+
+    def _build_left_rail(self) -> QFrame:
+        rail = QFrame()
+        rail.setObjectName("leftRail")
+        rail.setFixedWidth(152)
+        lay = QVBoxLayout(rail)
+        lay.setContentsMargins(2, 0, 6, 0)
+        lay.setSpacing(6)
+        for key, title, accent, mode, with_temp, tile_max in METRIC_SPECS:
+            tile = MiniGraphTile(
+                key=key, title=title, accent=accent,
+                max_value=tile_max, capacity=60,
+            )
+            tile.clicked.connect(lambda _=False, k=key: self._select_metric(k))
+            self._tiles[key] = tile
+            lay.addWidget(tile)
+        lay.addStretch(1)
+        return rail
+
+    def _select_metric(self, key: str) -> None:
+        """Show the detail graph for *key* and highlight its tile."""
+        if key not in self._pages:
+            return
+        self._graph_stack.setCurrentWidget(self._pages[key])
+        for k, tile in self._tiles.items():
+            tile.set_selected(k == key)
+        self._settings.selected_metric = key
+        self._store.save(self._settings)
+
+    def _toggle_left_rail(self) -> None:
+        visible = not self._left_rail.isVisible()
+        self._left_rail.setVisible(visible)
+        self._settings.left_rail_visible = visible
+        self._store.save(self._settings)
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(load_app_icon(), self)
@@ -628,6 +752,16 @@ class MainWindow(QMainWindow):
             self.graph.add_sample(rate.download_bps, rate.upload_bps)
             self.down_value.setText(format_rate(rate.download_bps))
             self.up_value.setText(format_rate(rate.upload_bps))
+
+            # Network tile (combined throughput).
+            total_bps = rate.download_bps + rate.upload_bps
+            self._tiles["network"].push(
+                total_bps, format_rate(total_bps),
+                f"↓{format_rate(rate.download_bps)} ↑{format_rate(rate.upload_bps)}",
+            )
+            # System tiles + detail pages (CPU/RAM/GPU/disk).
+            self._update_system()
+
             self.tray.setToolTip(
                 f"{APP_NAME}\n"
                 f"↓ {format_rate(rate.download_bps)}   "
@@ -670,6 +804,110 @@ class MainWindow(QMainWindow):
             self.latency_lbl.setText(f"{ms:.0f} ms")
         else:
             self.latency_lbl.setText("timeout")
+
+    # --------------------------- System metrics -----------------------------
+
+    def _update_system(self) -> None:
+        """Poll CPU/RAM/GPU/disk and feed the tiles + detail graphs."""
+        try:
+            s = self._sys_sampler.poll()
+        except Exception:
+            log.exception("System sampler poll failed")
+            return
+
+        self._last_gpu_temp = s.gpu.temp_c if s.gpu.available else None
+        cpu_temp = self._last_temp.cpu_c if self._last_temp else None
+
+        # CPU (secondary line set separately by the temperature thread).
+        self._tiles["cpu"].push(s.cpu_percent, f"{s.cpu_percent:.0f}%")
+        self._pages["cpu"].push(s.cpu_percent, temp=cpu_temp)
+
+        # RAM
+        self._tiles["ram"].push(
+            s.ram_percent, f"{s.ram_percent:.0f}%",
+            f"{s.ram_used / 1024 ** 3:.1f}/{s.ram_total / 1024 ** 3:.0f} GB",
+        )
+        self._pages["ram"].push(s.ram_percent)
+
+        # GPU
+        if s.gpu.available:
+            sub = f"{s.gpu.temp_c:.0f}°C  " if s.gpu.temp_c is not None else ""
+            sub += f"{s.gpu.mem_used / 1024 ** 3:.1f} GB"
+            self._tiles["gpu"].push(s.gpu.util_percent, f"{s.gpu.util_percent:.0f}%", sub)
+            self._pages["gpu"].push(s.gpu.util_percent, temp=s.gpu.temp_c)
+        else:
+            self._tiles["gpu"].push(0.0, "N/A", "no NVIDIA GPU")
+
+        # Disk (read + write throughput)
+        disk = s.disk_total_bps
+        self._tiles["disk"].push(
+            disk, format_rate(disk),
+            f"R {format_rate(s.disk_read_bps)}  W {format_rate(s.disk_write_bps)}",
+        )
+        self._pages["disk"].push(disk)
+
+    # ------------------------------ Temperatures ----------------------------
+
+    def _on_temp_result(self, sample: TempSample) -> None:
+        self._last_temp = sample
+        if sample.cpu_c is not None:
+            self._tiles["cpu"].set_sub_text(f"{sample.cpu_c:.0f}°C")
+        elif sample.needs_admin:
+            self._tiles["cpu"].set_sub_text("admin for °C")
+        else:
+            self._tiles["cpu"].set_sub_text("")
+        self._update_temps_card()
+
+    def _update_temps_card(self) -> None:
+        t = self._last_temp
+
+        def fmt(v: Optional[float]) -> str:
+            return f"{v:.0f}°C" if v is not None else "—"
+
+        cpu = fmt(t.cpu_c if t else None)
+        gpu = fmt(self._last_gpu_temp)
+        mobo = fmt(t.mobo_c if t else None)
+        html = f"CPU: {cpu}<br>GPU: {gpu}<br>Motherboard: {mobo}"
+        if t and t.needs_admin:
+            html += (
+                "<br><a href='elevate' style='color:#4f9dff; text-decoration:none;'>"
+                "↑ Run as admin for CPU/motherboard °C</a>"
+            )
+        elif t and not t.available:
+            why = t.error or "unavailable"
+            html += f"<br><span>({why})</span>"
+        self._temps_card.set_content(html)
+
+    def _on_card_link(self, href: str) -> None:
+        if href == "elevate":
+            self._relaunch_as_admin()
+
+    def _relaunch_as_admin(self) -> None:
+        """Relaunch the app elevated (UAC) so LHM can read CPU/mobo temps."""
+        if is_admin():
+            return
+        try:
+            if getattr(sys, "frozen", False):
+                exe, params = sys.executable, None
+            else:
+                exe = sys.executable
+                params = f'"{os.path.abspath(sys.argv[0])}"'
+            # ShellExecuteW returns >32 on success; "runas" triggers the UAC prompt.
+            rc = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", exe, params, os.getcwd(), 1
+            )
+            if int(rc) <= 32:
+                QMessageBox.information(
+                    self, "Administrator needed",
+                    "Elevation was cancelled.\n\nCPU and motherboard temperatures "
+                    "stay unavailable until the app is run as administrator. "
+                    "GPU temperature works either way.",
+                )
+                return
+            self._force_quit = True
+            self._quit_application()
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not relaunch", str(exc))
 
     # ------------------------------ Card updates ----------------------------
 
@@ -736,6 +974,16 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(generate_qss(mode, colors))
         self.graph.apply_theme(mode, colors)
 
+        # System detail graphs + tiles.
+        if hasattr(self, "_pages"):
+            for key, page in self._pages.items():
+                if key != "network":
+                    page.apply_theme(mode, colors)
+            for tile in self._tiles.values():
+                tile.apply_theme(mode)
+            # Network tile follows the theme's download accent.
+            self._tiles["network"].set_accent(colors.download)
+
     # ------------------------------ Settings --------------------------------
 
     def _open_settings(self) -> None:
@@ -744,11 +992,15 @@ class MainWindow(QMainWindow):
             previous_iface = self._settings.interface
             prev_latency_host = self._settings.latency_host
             prev_latency_enabled = self._settings.latency_enabled
+            prev_temps_enabled = self._settings.temps_enabled
             self._settings = dlg.apply_to(self._settings)
             self._store.save(self._settings)
             self._timer.setInterval(self._settings.update_interval_ms)
             self.graph.set_history_seconds(self._settings.history_seconds)
             self.graph.set_fill_enabled(self._settings.graph_fill)
+            for key, page in self._pages.items():
+                if key != "network":
+                    page.set_history_seconds(self._settings.history_seconds)
             self._apply_opacity()
             self._apply_window_flags()
             self._apply_theme()
@@ -763,6 +1015,17 @@ class MainWindow(QMainWindow):
                 if self._settings.latency_enabled:
                     self._latency_thread._stop = False
                     self._latency_thread.start()
+            # Start/stop temperature monitoring if toggled
+            if self._settings.temps_enabled != prev_temps_enabled:
+                if self._settings.temps_enabled:
+                    if not self._temp_thread.isRunning():
+                        self._temp_thread._stop = False
+                        self._temp_thread.start()
+                else:
+                    if self._temp_thread.isRunning():
+                        self._temp_thread.stop()
+                    self._last_temp = None
+                    self._update_temps_card()
 
     # -------------------------------- Tray ----------------------------------
 
@@ -785,6 +1048,17 @@ class MainWindow(QMainWindow):
         # Stop latency thread
         if self._latency_thread.isRunning():
             self._latency_thread.stop()
+
+        # Stop temperature thread + release NVML
+        try:
+            if self._temp_thread.isRunning():
+                self._temp_thread.stop()
+        except Exception:
+            pass
+        try:
+            self._sys_sampler.close()
+        except Exception:
+            pass
 
         # Save data usage
         self._data_usage.save()
