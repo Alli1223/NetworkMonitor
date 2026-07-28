@@ -47,7 +47,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .graph_widget import TrafficGraph
+from .graph_widget import VIEW_BANDWIDTH, VIEW_BOTH, VIEW_PING, TrafficGraph
 from .latency import LatencyThread
 from .metric_graph import MetricGraph
 from .mini_graph import MiniGraphTile
@@ -257,6 +257,14 @@ class SettingsDialog(QDialog):
         self.graph_fill_chk = QCheckBox("Shade area under the download line")
         self.graph_fill_chk.setChecked(current.graph_fill)
 
+        # Which series the network graph shows: both, bandwidth only, ping only.
+        self.view_mode_combo = QComboBox()
+        self.view_mode_combo.addItem("Download / upload + ping", userData=VIEW_BOTH)
+        self.view_mode_combo.addItem("Download / upload only", userData=VIEW_BANDWIDTH)
+        self.view_mode_combo.addItem("Ping only", userData=VIEW_PING)
+        idx = self.view_mode_combo.findData(current.graph_view_mode)
+        self.view_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
         self.temps_chk = QCheckBox("Monitor CPU / motherboard temperatures")
         self.temps_chk.setChecked(current.temps_enabled)
         self.temps_chk.setToolTip(
@@ -298,6 +306,9 @@ class SettingsDialog(QDialog):
         row += 1
         grid.addWidget(QLabel("Color theme"), row, 0)
         grid.addWidget(self.color_theme_combo, row, 1)
+        row += 1
+        grid.addWidget(QLabel("Network graph"), row, 0)
+        grid.addWidget(self.view_mode_combo, row, 1)
         row += 1
         grid.addWidget(self.graph_fill_chk, row, 0, 1, 2)
         row += 1
@@ -375,6 +386,7 @@ class SettingsDialog(QDialog):
         s.theme_mode = self.mode_combo.currentData()
         s.color_theme = self.color_theme_combo.currentData()
         s.graph_fill = self.graph_fill_chk.isChecked()
+        s.graph_view_mode = self.view_mode_combo.currentData()
         s.temps_enabled = self.temps_chk.isChecked()
         s.latency_host = self.latency_host_edit.text().strip() or "8.8.8.8"
         s.latency_enabled = self.latency_chk.isChecked()
@@ -506,6 +518,7 @@ class MainWindow(QMainWindow):
         sep1.setObjectName("subtle")
         sep2 = QLabel("·")
         sep2.setObjectName("subtle")
+        self._sep1, self._sep2 = sep1, sep2
 
         # Latency label
         self.latency_lbl = QLabel("")
@@ -588,6 +601,7 @@ class MainWindow(QMainWindow):
         self.graph = TrafficGraph(
             history_seconds=self._settings.history_seconds,
             fill_enabled=self._settings.graph_fill,
+            view_mode=self._settings.graph_view_mode,
         )
         self.graph.double_clicked.connect(self._toggle_frameless)
         self._graph_stack.addWidget(self.graph)
@@ -650,6 +664,7 @@ class MainWindow(QMainWindow):
         if initial not in self._pages:
             initial = "network"
         self._select_metric(initial)
+        self._apply_graph_view_mode()
         self._temps_card.set_content("Reading sensors…")
 
         # Bottom-right size grip so a frameless window can still be resized.
@@ -775,6 +790,23 @@ class MainWindow(QMainWindow):
         self._sidebar_toggle.setText("◀" if visible else "▶")
         self._settings.sidebar_visible = visible
         self._store.save(self._settings)
+
+    def _apply_graph_view_mode(self) -> None:
+        """Sync the graph and the top-row readouts with the chosen view mode."""
+        mode = self._settings.graph_view_mode
+        if mode not in (VIEW_BOTH, VIEW_BANDWIDTH, VIEW_PING):
+            mode = VIEW_BOTH
+            self._settings.graph_view_mode = mode
+        self.graph.set_view_mode(mode)
+
+        show_bw = mode in (VIEW_BOTH, VIEW_BANDWIDTH)
+        show_ping = mode in (VIEW_BOTH, VIEW_PING)
+        for w in (self.down_arrow, self.down_value,
+                  self.up_arrow, self.up_value, self._sep1):
+            w.setVisible(show_bw)
+        self.latency_lbl.setVisible(show_ping)
+        # sep1 sits between ↓ and ↑; sep2 between the rates and the ping value.
+        self._sep2.setVisible(show_bw and show_ping)
 
     def _apply_opacity(self) -> None:
         """Map 30..100 percent setting onto setWindowOpacity()."""
@@ -1074,6 +1106,7 @@ class MainWindow(QMainWindow):
             self._timer.setInterval(self._settings.update_interval_ms)
             self.graph.set_history_seconds(self._settings.history_seconds)
             self.graph.set_fill_enabled(self._settings.graph_fill)
+            self._apply_graph_view_mode()
             for key, page in self._pages.items():
                 if key != "network":
                     page.set_history_seconds(self._settings.history_seconds)

@@ -22,6 +22,12 @@ DOWNLOAD_COLOR = "#4f9dff"
 UPLOAD_COLOR = "#22c55e"
 LATENCY_COLOR = "#f59e0b"
 
+# Which series the network graph draws.
+VIEW_BOTH = "both"
+VIEW_BANDWIDTH = "bandwidth"   # download / upload only
+VIEW_PING = "ping"             # latency only
+VIEW_MODES = (VIEW_BOTH, VIEW_BANDWIDTH, VIEW_PING)
+
 
 class RateAxis(pg.AxisItem):
     """Y-axis that formats tick values as KB/s, MB/s, etc."""
@@ -81,7 +87,7 @@ class TrafficGraph(pg.PlotWidget):
     double_clicked = pyqtSignal()
 
     def __init__(self, history_seconds: int = 300, smooth_alpha: float = 0.3,
-                 fill_enabled: bool = True, parent=None):
+                 fill_enabled: bool = True, view_mode: str = VIEW_BOTH, parent=None):
         super().__init__(
             parent=parent,
             axisItems={
@@ -106,6 +112,7 @@ class TrafficGraph(pg.PlotWidget):
         self._history = history_seconds
         self._smooth_alpha = smooth_alpha
         self._fill_enabled = fill_enabled
+        self._view_mode = view_mode if view_mode in VIEW_MODES else VIEW_BOTH
         self._download: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
         self._upload: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
         self._latency: Deque[float] = deque([0.0] * history_seconds, maxlen=history_seconds)
@@ -149,6 +156,7 @@ class TrafficGraph(pg.PlotWidget):
 
         # Latency overlay — secondary Y-axis on the right
         self._setup_latency_overlay()
+        self._apply_view_mode()
 
         self.setXRange(self._xs[0], 0, padding=0)
         self.setYRange(0, 1024, padding=0.1)  # default 1 KB until we have data
@@ -181,6 +189,40 @@ class TrafficGraph(pg.PlotWidget):
         sync_views()
         p.vb.sigResized.connect(sync_views)
         self._sync_latency = sync_views  # prevent garbage-collection
+
+    # ------------------------------------------------------------------ #
+    #  View mode (bandwidth / ping / both)                                #
+    # ------------------------------------------------------------------ #
+
+    def set_view_mode(self, mode: str) -> None:
+        """Choose which series are drawn: both, bandwidth only, or ping only."""
+        mode = mode if mode in VIEW_MODES else VIEW_BOTH
+        if mode == self._view_mode:
+            return
+        self._view_mode = mode
+        self._apply_view_mode()
+        self._redraw()
+
+    def _apply_view_mode(self) -> None:
+        """Show/hide the curves, markers and Y-axes for the current mode."""
+        p = self.getPlotItem()
+        show_bw = self._view_mode in (VIEW_BOTH, VIEW_BANDWIDTH)
+        show_ping = self._view_mode in (VIEW_BOTH, VIEW_PING)
+
+        for item in (self._down_curve, self._up_curve,
+                     self._peak_down_line, self._avg_down_line,
+                     self._peak_up_line, self._avg_up_line):
+            item.setVisible(show_bw)
+        self._latency_curve.setVisible(show_ping)
+
+        # Hide the axis that belongs to a hidden series so the plot uses the
+        # full width for whatever is left.
+        (p.showAxis if show_bw else p.hideAxis)("left")
+        (p.showAxis if show_ping else p.hideAxis)("right")
+
+        # Showing/hiding an axis changes the plot geometry; keep the latency
+        # viewbox aligned with it.
+        self._sync_latency()
 
     # ------------------------------------------------------------------ #
     #  Events                                                             #

@@ -34,6 +34,7 @@ class AppSettings:
     data_usage_threshold_gb: int = 0  # 0 = disabled
     sidebar_visible: bool = True
     graph_fill: bool = True  # shade the area under the download curve
+    graph_view_mode: str = "both"  # both | bandwidth | ping
     left_rail_visible: bool = True       # system-metric tile rail on the left
     temps_enabled: bool = True           # run LibreHardwareMonitor for CPU/mobo temps
     selected_metric: str = "network"     # which detail graph is shown
@@ -78,6 +79,7 @@ class SettingsStore:
         )
         s.sidebar_visible = self._to_bool(self._q.value("sidebar_visible", s.sidebar_visible))
         s.graph_fill = self._to_bool(self._q.value("graph_fill", s.graph_fill))
+        s.graph_view_mode = self._q.value("graph_view_mode", s.graph_view_mode, type=str)
         s.left_rail_visible = self._to_bool(self._q.value("left_rail_visible", s.left_rail_visible))
         s.temps_enabled = self._to_bool(self._q.value("temps_enabled", s.temps_enabled))
         s.selected_metric = self._q.value("selected_metric", s.selected_metric, type=str)
@@ -104,6 +106,7 @@ class SettingsStore:
         self._q.setValue("data_usage_threshold_gb", int(s.data_usage_threshold_gb))
         self._q.setValue("sidebar_visible", bool(s.sidebar_visible))
         self._q.setValue("graph_fill", bool(s.graph_fill))
+        self._q.setValue("graph_view_mode", s.graph_view_mode)
         self._q.setValue("left_rail_visible", bool(s.left_rail_visible))
         self._q.setValue("temps_enabled", bool(s.temps_enabled))
         self._q.setValue("selected_metric", s.selected_metric)

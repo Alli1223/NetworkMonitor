@@ -4,7 +4,9 @@ A lightweight cross-platform network traffic monitor for Windows and Linux. Pick
 
 ## Features
 
-- Live upload/download graph (updates every second by default)
+- Live upload/download graph (updates every second by default), with a latency
+  overlay on a second axis — show both, download/upload only, or ping only
+  (Settings → Network graph)
 - Task-Manager-style system panel: a left rail of clickable mini-graph tiles for
   **CPU, RAM, GPU and Disk** usage — click a tile to expand its full-size history
   graph in the main area (network included)
@@ -120,7 +122,7 @@ Settings are stored under:
 - **Windows:** `HKEY_CURRENT_USER\Software\NetworkMonitor\NetworkMonitor`
 - **Linux:** `~/.config/NetworkMonitor/NetworkMonitor.conf`
 
-Editable from the Settings dialog: graph history length, update interval, start-minimized, minimize-to-tray-on-close, and check-for-updates-on-startup.
+Editable from the Settings dialog: graph history length, update interval, which series the network graph shows (bandwidth / ping / both), start-minimized, minimize-to-tray-on-close, and check-for-updates-on-startup.
 
 ## Notes
 
