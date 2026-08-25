@@ -11,7 +11,7 @@ from collections import deque
 from typing import Deque
 
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent
 
 from .network_monitor import format_rate
@@ -58,6 +58,67 @@ class LatencyAxis(pg.AxisItem):
 
     def tickStrings(self, values, scale, spacing):
         return [f"{int(round(v))} ms" for v in values]
+
+
+class AxisAutoScaler(QObject):
+    """Eases a plot's Y-range so whatever is on screen fills the height.
+
+    :meth:`set_target` is fed the highest value currently drawn on every
+    redraw; a ~30 fps timer then glides the applied ceiling toward it instead
+    of snapping.  Growing is quick so spikes are never clipped for long,
+    shrinking is slower so the chart settles gently once traffic dies down.
+    """
+
+    #: Ignore target changes smaller than this so axis labels don't twitch.
+    DEADBAND = 0.01
+
+    def __init__(self, apply_range, minimum: float, headroom: float = 1.02,
+                 grow: float = 0.25, shrink: float = 0.13, parent=None):
+        super().__init__(parent)
+        self._apply = apply_range
+        self._minimum = float(minimum)
+        self._headroom = headroom
+        self._grow = grow
+        self._shrink = shrink
+        self._current = float(minimum)
+        self._target = float(minimum)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self._step)
+        self._apply(self._current)
+
+    def set_target(self, peak: float, snap: bool = False) -> None:
+        """Aim the axis at *peak* (plus a little headroom).
+
+        Pass ``snap=True`` to jump there immediately — used when the data is
+        replaced wholesale rather than scrolled by one sample.
+        """
+        target = max(float(peak) * self._headroom, self._minimum)
+        if snap:
+            self._timer.stop()
+            self._target = self._current = target
+            self._apply(target)
+            return
+        if abs(target - self._target) <= self._target * self.DEADBAND:
+            return
+        self._target = target
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def _step(self) -> None:
+        gap = self._target - self._current
+        if abs(gap) <= self._target * 0.005:
+            self._current = self._target
+            self._timer.stop()
+        elif gap > 0:
+            self._current += gap * self._grow
+        else:
+            # Shrinking is geometric so that dropping from 10 MB/s to a few
+            # KB/s glides at the same rate as merely halving does; a linear
+            # ease would crawl for several seconds after a big spike.
+            self._current *= (self._target / self._current) ** self._shrink
+        self._apply(self._current)
 
 
 def _ema_smooth(data: list[float], alpha: float = 0.3) -> list[float]:
@@ -158,8 +219,19 @@ class TrafficGraph(pg.PlotWidget):
         self._setup_latency_overlay()
         self._apply_view_mode()
 
+        # Both Y-axes track the peak that is currently on screen, gliding
+        # up and down as traffic changes (default 1 KB/s / 10 ms until we
+        # have data).
+        self._rate_scaler = AxisAutoScaler(
+            lambda ymax: self.setYRange(0, ymax, padding=0),
+            minimum=1024.0, parent=self,
+        )
+        self._latency_scaler = AxisAutoScaler(
+            lambda ymax: self._latency_vb.setYRange(0, ymax, padding=0),
+            minimum=10.0, parent=self,
+        )
+
         self.setXRange(self._xs[0], 0, padding=0)
-        self.setYRange(0, 1024, padding=0.1)  # default 1 KB until we have data
         self.setLimits(xMin=self._xs[0], xMax=0)
 
     # ------------------------------------------------------------------ #
@@ -292,13 +364,14 @@ class TrafficGraph(pg.PlotWidget):
         self._xs = list(range(-(seconds - 1), 1))
         self.setXRange(self._xs[0], 0, padding=0)
         self.setLimits(xMin=self._xs[0], xMax=0)
-        self._redraw()
+        # The window changed wholesale, so jump to the new scale.
+        self._redraw(snap_scale=True)
 
     def reset(self) -> None:
         self._download = deque([0.0] * self._history, maxlen=self._history)
         self._upload = deque([0.0] * self._history, maxlen=self._history)
         self._latency = deque([0.0] * self._history, maxlen=self._history)
-        self._redraw()
+        self._redraw(snap_scale=True)
 
     # ------------------------------------------------------------------ #
     #  Render                                                             #
@@ -316,7 +389,7 @@ class TrafficGraph(pg.PlotWidget):
         self._fill_enabled = enabled
         self._down_curve.setFillLevel(0 if enabled else None)
 
-    def _redraw(self) -> None:
+    def _redraw(self, snap_scale: bool = False) -> None:
         xs = self._xs
         dl_raw = list(self._download)
         ul_raw = list(self._upload)
@@ -329,10 +402,11 @@ class TrafficGraph(pg.PlotWidget):
         self._down_curve.setData(xs, dl)
         self._up_curve.setData(xs, ul)
 
-        # Auto-scale Y to the *raw* peak so spikes aren't clipped.
+        # Scale Y to the *raw* peak on screen so spikes aren't clipped and the
+        # busiest moment in view sits at the top of the plot.  As that peak
+        # scrolls out of the window the axis eases back down by itself.
         peak = max(max(dl_raw, default=0.0), max(ul_raw, default=0.0))
-        ymax = max(peak * 1.15, 1024.0)  # never below 1 KB/s
-        self.setYRange(0, ymax, padding=0)
+        self._rate_scaler.set_target(peak, snap=snap_scale)
 
         # Peak / average markers use raw data for accuracy.
         if dl_raw:
@@ -346,5 +420,4 @@ class TrafficGraph(pg.PlotWidget):
         lat_raw = list(self._latency)
         lat = _ema_smooth(lat_raw, alpha) if alpha < 1.0 else lat_raw
         self._latency_curve.setData(xs, lat)
-        lat_peak = max(lat_raw, default=1.0)
-        self._latency_vb.setYRange(0, max(lat_peak * 1.15, 10.0), padding=0)
+        self._latency_scaler.set_target(max(lat_raw, default=0.0), snap=snap_scale)

@@ -7,6 +7,9 @@ A lightweight cross-platform network traffic monitor for Windows and Linux. Pick
 - Live upload/download graph (updates every second by default), with a latency
   overlay on a second axis — show both, download/upload only, or ping only
   (Settings → Network graph)
+- Self-scaling axes: the graph always fits the peak currently on screen and
+  glides smoothly back down as traffic quietens, so slow and fast periods are
+  both readable
 - Task-Manager-style system panel: a left rail of clickable mini-graph tiles for
   **CPU, RAM, GPU and Disk** usage — click a tile to expand its full-size history
   graph in the main area (network included)

@@ -18,7 +18,7 @@ import pyqtgraph as pg
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent
 
-from .graph_widget import RateAxis, TimeAxis
+from .graph_widget import AxisAutoScaler, RateAxis, TimeAxis
 from .theme import ColorTheme, ModeColors
 
 LATENCY_COLOR = "#f59e0b"
@@ -91,12 +91,25 @@ class MetricGraph(pg.PlotWidget):
         if with_temp:
             self._setup_temp_overlay()
 
+        # Throughput has no natural ceiling, so its axis follows the peak
+        # currently on screen; percentages stay pinned to 0-100.
+        self._rate_scaler = None
+        self._temp_scaler = None
+        if mode != "percent":
+            self._rate_scaler = AxisAutoScaler(
+                lambda ymax: self.setYRange(0, ymax, padding=0),
+                minimum=1024.0, parent=self,
+            )
+        if self._temp_vb is not None:
+            self._temp_scaler = AxisAutoScaler(
+                lambda ymax: self._temp_vb.setYRange(0, ymax, padding=0),
+                minimum=10.0, parent=self,
+            )
+
         self.setXRange(self._xs[0], 0, padding=0)
         self.setLimits(xMin=self._xs[0], xMax=0)
         if mode == "percent":
             self.setYRange(0, 100, padding=0)
-        else:
-            self.setYRange(0, 1024, padding=0.1)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         self.double_clicked.emit()
@@ -162,27 +175,26 @@ class MetricGraph(pg.PlotWidget):
         self._xs = list(range(-(seconds - 1), 1))
         self.setXRange(self._xs[0], 0, padding=0)
         self.setLimits(xMin=self._xs[0], xMax=0)
-        self._redraw()
+        # The window changed wholesale, so jump to the new scale.
+        self._redraw(snap_scale=True)
 
     def reset(self) -> None:
         self._data = deque([0.0] * self._history, maxlen=self._history)
         self._temp = deque([0.0] * self._history, maxlen=self._history)
-        self._redraw()
+        self._redraw(snap_scale=True)
 
-    def _redraw(self) -> None:
+    def _redraw(self, snap_scale: bool = False) -> None:
         xs = self._xs
         data = list(self._data)
         self._curve.setData(xs, data)
 
-        if self._mode == "rate":
-            peak = max(data, default=0.0)
-            self.setYRange(0, max(peak * 1.15, 1024.0), padding=0)
+        if self._rate_scaler is not None:
+            self._rate_scaler.set_target(max(data, default=0.0), snap=snap_scale)
 
         if self._with_temp and self._temp_curve is not None:
             temp = list(self._temp)
             self._temp_curve.setData(xs, temp)
-            tpeak = max(temp, default=1.0)
-            self._temp_vb.setYRange(0, max(tpeak * 1.15, 10.0), padding=0)
+            self._temp_scaler.set_target(max(temp, default=0.0), snap=snap_scale)
 
     # ------------------------------------------------------------------ #
     #  Theme                                                              #
