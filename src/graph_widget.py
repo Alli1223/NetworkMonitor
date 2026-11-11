@@ -402,10 +402,13 @@ class TrafficGraph(pg.PlotWidget):
         self._down_curve.setData(xs, dl)
         self._up_curve.setData(xs, ul)
 
-        # Scale Y to the *raw* peak on screen so spikes aren't clipped and the
-        # busiest moment in view sits at the top of the plot.  As that peak
-        # scrolls out of the window the axis eases back down by itself.
-        peak = max(max(dl_raw, default=0.0), max(ul_raw, default=0.0))
+        # Scale Y to the peak of the curves actually *drawn* (the smoothed
+        # data), so the highest point of the line touches the top of the plot.
+        # Scaling to the raw peak left the graph squashed into the bottom
+        # quarter, because EMA smoothing flattens short spikes well below
+        # their raw value.  As that peak scrolls out of the window the axis
+        # eases back down by itself.
+        peak = max(max(dl, default=0.0), max(ul, default=0.0))
         self._rate_scaler.set_target(peak, snap=snap_scale)
 
         # Peak / average markers use raw data for accuracy.
@@ -420,4 +423,4 @@ class TrafficGraph(pg.PlotWidget):
         lat_raw = list(self._latency)
         lat = _ema_smooth(lat_raw, alpha) if alpha < 1.0 else lat_raw
         self._latency_curve.setData(xs, lat)
-        self._latency_scaler.set_target(max(lat_raw, default=0.0), snap=snap_scale)
+        self._latency_scaler.set_target(max(lat, default=0.0), snap=snap_scale)
